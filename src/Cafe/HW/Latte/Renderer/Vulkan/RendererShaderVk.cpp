@@ -10,6 +10,9 @@
 #include <glslang/SPIRV/GlslangToSpv.h>
 #include "util/helpers/helpers.h"
 
+#include "VulkanCapabilities.h"
+#include "ShaderOptimizer.h"
+
 bool s_isLoadingShadersVk{ false };
 class FileCache* s_spirvCache{nullptr};
 
@@ -268,7 +271,7 @@ void RendererShaderVk::CompileInternal(bool isRenderThread)
 {
 	const bool compileWithDebugInfo = ((VulkanRenderer*)g_renderer.get())->IsTracingToolEnabled();
 
-	// try to retrieve SPIR-V module from cache
+	// try to retrieve SPIR-V module from cache FIRST
 	if (s_isLoadingShadersVk && (m_isGameShader && !m_isGfxPackShader) && s_spirvCache && !compileWithDebugInfo)
 	{
 		cemu_assert_debug(m_baseHash != 0);
@@ -280,8 +283,23 @@ void RendererShaderVk::CompileInternal(bool isRenderThread)
 			// generate shader from cached SPIR-V buffer
 			CreateVkShaderModule(std::span<uint32>((uint32*)cacheFileData.data(), cacheFileData.size() / sizeof(uint32)));
 			FinishCompilation();
-			return;
+			return;  // ← On sort ici, pas besoin d'optimiser
 		}
+	}
+
+	// Not in the SPIR-V cache, compile from GLSL.
+	// Cemu's SPIR-V cache already stores the final result, so no extra cache is needed for the optimized GLSL.
+	std::string optimizedGLSL;
+
+#ifdef __ANDROID__
+	if (VulkanCapabilities::IsFP16ShaderRewriteEnabled())
+	{
+		optimizedGLSL = ShaderOptimizer::OptimizeForAdreno(m_glslCode, ShaderOptimizer::OptimizationLevel::Safe);
+	}
+	else
+#endif
+	{
+		optimizedGLSL = m_glslCode;
 	}
 
 	EShLanguage state;
@@ -300,8 +318,22 @@ void RendererShaderVk::CompileInternal(bool isRenderThread)
 		cemu_assert_debug(false);
 	}
 
+	if (optimizedGLSL != m_glslCode)
+	{
+		// The FP16 rewrite is text based and can produce GLSL that doesn't compile. Verify it and fall back to the original source.
+		glslang::TShader trialShader(state);
+		const char* trialStr = optimizedGLSL.c_str();
+		trialShader.setStrings(&trialStr, 1);
+		trialShader.setEnvInput(glslang::EShSourceGlsl, state, glslang::EShClientVulkan, 100);
+		trialShader.setEnvClient(glslang::EShClientVulkan, glslang::EShTargetClientVersion::EShTargetVulkan_1_1);
+		trialShader.setEnvTarget(glslang::EShTargetSpv, glslang::EShTargetLanguageVersion::EShTargetSpv_1_3);
+		TBuiltInResource trialResources = GetDefaultBuiltInResource();
+		if (!trialShader.parse(&trialResources, 450, false, (EShMessages)(EShMsgSpvRules | EShMsgVulkanRules)))
+			optimizedGLSL = m_glslCode;
+	}
+
 	glslang::TShader Shader(state);
-	const char* cstr = m_glslCode.c_str();
+	const char* cstr = optimizedGLSL.c_str();  // ← Utiliser version optimisée
 	Shader.setStrings(&cstr, 1);
 	Shader.setEnvInput(glslang::EShSourceGlsl, state, glslang::EShClientVulkan, 100);
 	Shader.setEnvClient(glslang::EShClientVulkan, glslang::EShTargetClientVersion::EShTargetVulkan_1_1);
@@ -355,13 +387,22 @@ void RendererShaderVk::CompileInternal(bool isRenderThread)
 	glslang::SpvOptions spvOptions;
 	spvOptions.disableOptimizer = false;
 	spvOptions.validate = false;
-	spvOptions.optimizeSize = true;
+    // MODIFIÉ: Ne pas optimiser pour la taille sur Android/Adreno
+    // Sur mobile, le cache est sur stockage rapide (UFS 3.1+)
+    // et on préfère optimiser pour la performance
+    #ifdef __ANDROID__
+	    spvOptions.optimizeSize = false;  // Préférer perf sur mobile
+    #else
+	    spvOptions.optimizeSize = true;   // Taille sur desktop
+    #endif
+
 	if (compileWithDebugInfo)
 	{
 		spvOptions.generateDebugInfo = true;
 		spvOptions.emitNonSemanticShaderDebugInfo = true;
 		spvOptions.emitNonSemanticShaderDebugSource = true;
 
+		// Utiliser le code original pour le debug, pas l'optimisé
 		Shader.addSourceText(m_glslCode.c_str(), (uint32)m_glslCode.size());
 		Shader.setSourceFile(fmt::format("shader_{:016x}_{:016x}.glsl", m_baseHash, m_auxHash).c_str());
 	}

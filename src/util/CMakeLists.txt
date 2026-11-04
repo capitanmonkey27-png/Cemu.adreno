@@ -25,6 +25,8 @@ add_library(CemuUtil
   helpers/fspinlock.h
   helpers/helpers.cpp
   helpers/helpers.h
+  helpers/AndroidTweaks.cpp
+  helpers/AndroidTweaks.h
   helpers/MapAdaptor.h
   helpers/MemoryPool.h
   helpers/ringbuffer.h

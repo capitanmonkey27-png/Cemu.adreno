@@ -1,3 +1,4 @@
+#include "util/helpers/AndroidTweaks.h"
 #include "Cafe/OS/common/OSCommon.h"
 #include "Cafe/HW/Espresso/PPCCallback.h"
 #include "Cafe/OS/RPL/rpl.h"
@@ -1429,6 +1430,7 @@ namespace coreinit
 	void OSSchedulerCoreEmulationThread(void* _assignedCoreIndex)
 	{
 		SetThreadName(fmt::format("OSSched[core={}]", (uintptr_t)_assignedCoreIndex).c_str());
+		AndroidTweaks::ApplyThreadTuning(AndroidTweaks::ThreadRole::Emulation);
 		t_assignedCoreIndex = (sint32)(uintptr_t)_assignedCoreIndex;
 
 		enableFlushDenormalsToZero();

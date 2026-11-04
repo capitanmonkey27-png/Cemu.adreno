@@ -85,6 +85,8 @@ android {
             applicationIdSuffix = ".debug"
         }
         release {
+            // installs next to the original app (info.cemu.cemu) instead of replacing it
+            applicationIdSuffix = ".adreno"
             isMinifyEnabled = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),

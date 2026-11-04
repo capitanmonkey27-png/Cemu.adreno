@@ -1,4 +1,5 @@
 #include "Cafe/HW/Latte/ISA/RegDefines.h"
+#include "util/helpers/AndroidTweaks.h"
 #include "Cafe/OS/libs/gx2/GX2.h" // todo - remove dependency
 #include "Cafe/HW/Latte/Core/Latte.h"
 #include "Cafe/HW/Latte/Core/LatteDraw.h"
@@ -115,6 +116,7 @@ void LatteThread_HandleOSScreen()
 int Latte_ThreadEntry()
 {
 	SetThreadName("LatteThread");
+	AndroidTweaks::ApplyThreadTuning(AndroidTweaks::ThreadRole::Gpu);
 	sint32 w,h;
 	WindowSystem::GetWindowPhysSize(w,h);
 
