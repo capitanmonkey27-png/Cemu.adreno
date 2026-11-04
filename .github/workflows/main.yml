@@ -1,0 +1,7 @@
+- name: Build Android release APK
+  # You may pin to the exact commit or the version.
+  # uses: VladDaniliuk/action-release-releaseapk@b7d927e4b936ec9c6e7852553d644a34b883ff4b
+  uses: VladDaniliuk/action-release-releaseapk@1.4.1
+  with:
+    # Github secret token to allow automated publishing of APK to release.
+    GITHUB_TOKEN: # optional
