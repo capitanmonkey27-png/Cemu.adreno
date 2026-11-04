@@ -1,0 +1,1 @@
+patch -p1 < adreno-tweaks-on-cemu-0.5.patch
