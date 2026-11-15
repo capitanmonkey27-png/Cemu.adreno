@@ -1,0 +1,478 @@
+diff -ruN a/src/Cafe/HW/Latte/Core/LatteThread.cpp b/src/Cafe/HW/Latte/Core/LatteThread.cpp
+--- a/src/Cafe/HW/Latte/Core/LatteThread.cpp	2026-11-14 23:21:28.461535170 +0000
++++ b/src/Cafe/HW/Latte/Core/LatteThread.cpp	2026-11-14 23:22:23.513688673 +0000
+@@ -116,7 +116,6 @@
+ int Latte_ThreadEntry()
+ {
+ 	SetThreadName("LatteThread");
+-	AndroidTweaks::ApplyThreadTuning(AndroidTweaks::ThreadRole::Gpu);
+ 	sint32 w,h;
+ 	WindowSystem::GetWindowPhysSize(w,h);
+ 
+@@ -209,6 +208,9 @@
+ 		if (Latte_GetStopSignal())
+ 			LatteThread_Exit();
+ 	}
++	// pin only now: init is done and all helper threads (shader/pipeline compilers) were already created,
++	// so none of them can inherit the single-core affinity of this thread
++	AndroidTweaks::ApplyThreadTuning(AndroidTweaks::ThreadRole::Gpu);
+ 	LatteCP_ProcessRingbuffer();
+ 	cemu_assert_debug(false); // should never reach
+ 	return 0;
+diff -ruN a/src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp b/src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp
+--- a/src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp	2026-11-14 23:21:28.466033767 +0000
++++ b/src/Cafe/OS/libs/coreinit/coreinit_Thread.cpp	2026-11-14 23:22:23.513289442 +0000
+@@ -1430,7 +1430,7 @@
+ 	void OSSchedulerCoreEmulationThread(void* _assignedCoreIndex)
+ 	{
+ 		SetThreadName(fmt::format("OSSched[core={}]", (uintptr_t)_assignedCoreIndex).c_str());
+-		AndroidTweaks::ApplyThreadTuning(AndroidTweaks::ThreadRole::Emulation);
++		AndroidTweaks::ApplyThreadTuning(AndroidTweaks::ThreadRole::Emulation, (int)(uintptr_t)_assignedCoreIndex, g_isMulticoreMode ? 3 : 1);
+ 		t_assignedCoreIndex = (sint32)(uintptr_t)_assignedCoreIndex;
+ 
+ 		enableFlushDenormalsToZero();
+diff -ruN a/src/util/CMakeLists.txt b/src/util/CMakeLists.txt
+--- a/src/util/CMakeLists.txt	2026-11-14 23:21:28.486664363 +0000
++++ b/src/util/CMakeLists.txt	2026-11-14 23:22:23.514133060 +0000
+@@ -27,6 +27,7 @@
+   helpers/helpers.h
+   helpers/AndroidTweaks.cpp
+   helpers/AndroidTweaks.h
++  helpers/AndroidTweaksLayout.h
+   helpers/MapAdaptor.h
+   helpers/MemoryPool.h
+   helpers/ringbuffer.h
+diff -ruN a/src/util/helpers/AndroidTweaks.cpp b/src/util/helpers/AndroidTweaks.cpp
+--- a/src/util/helpers/AndroidTweaks.cpp	2026-11-14 23:21:28.487849321 +0000
++++ b/src/util/helpers/AndroidTweaks.cpp	2026-11-14 23:22:23.512955381 +0000
+@@ -1,6 +1,10 @@
+ #include "util/helpers/AndroidTweaks.h"
++#include "util/helpers/AndroidTweaksLayout.h"
+ #include "config/ActiveSettings.h"
++#include "Cemu/Logging/CemuLogging.h"
++#include <cstdlib>
+ #include <fstream>
++#include <sstream>
+ #include <string>
+ #include <vector>
+ #include <algorithm>
+@@ -8,6 +12,8 @@
+ #if defined(__ANDROID__)
+ #include <sched.h>
+ #include <unistd.h>
++#include <sys/resource.h>
++#include <sys/syscall.h>
+ #endif
+ 
+ namespace AndroidTweaks
+@@ -23,8 +29,10 @@
+ 
+ 	static const char* kDefaultFile =
+ 		"# Android/Adreno performance tweaks (1 = on, 0 = off)\n"
+-		"# Pin emulation + GPU threads to the faster CPU cores\n"
++		"# Place Latte / PPC threads on dedicated big cores (topology aware)\n"
+ 		"bigCoreAffinity=1\n"
++		"# Keep compile / cache helper threads off those cores and lower their priority\n"
++		"helperThreadDemotion=1\n"
+ 		"# Experimental: by-region barriers between render passes (Adreno only, may be a no-op)\n"
+ 		"byRegionBarriers=0\n"
+ 		"# Experimental: FP16 rewrite of generated GLSL (Adreno only, falls back per shader on compile errors).\n"
+@@ -60,6 +68,8 @@
+ 				bool on = (val == "1" || val == "true" || val == "on");
+ 				if (key == "bigCoreAffinity")
+ 					cfg.bigCoreAffinity = on;
++				else if (key == "helperThreadDemotion")
++					cfg.helperThreadDemotion = on;
+ 				else if (key == "byRegionBarriers")
+ 					cfg.byRegionBarriers = on;
+ 				else if (key == "fp16ShaderRewrite")
+@@ -80,54 +90,145 @@
+ 	}
+ 
+ #if defined(__ANDROID__)
+-	// Cores whose max frequency is within 70% of the fastest core
+-	static const std::vector<int>& GetPerformanceCores()
++	// --- CPU topology detection -------------------------------------------------------------------------------
++
++	static long ReadLongFile(const std::string& path)
+ 	{
+-		static const std::vector<int> s_cores = []() {
+-			std::vector<int> result;
+-			long cpuCount = sysconf(_SC_NPROCESSORS_CONF);
+-			if (cpuCount <= 0 || cpuCount > CPU_SETSIZE)
+-				return result;
+-			std::vector<long> freq(cpuCount, 0);
+-			long maxFreq = 0;
+-			for (long i = 0; i < cpuCount; i++)
++		std::ifstream f(path);
++		long v = 0;
++		if (f.is_open() && (f >> v))
++			return v;
++		return 0;
++	}
++
++	// Rough relative speed of an ARM core by its "CPU part" id, used only if sysfs gives us nothing.
++	static long CpuPartScore(unsigned part)
++	{
++		switch (part)
++		{
++		case 0xd03: case 0xd04: case 0xd05: case 0xd46: case 0xd80: // A53 A35 A55 A510 A520
++			return 100;
++		case 0xd0a: case 0xd0b: case 0xd0d: case 0xd41: case 0xd47: case 0xd4d: case 0xd81: case 0xd87: // A75 A76 A77 A78 A710 A715 A720 A725
++			return 250;
++		case 0xd44: case 0xd4c: case 0xd48: case 0xd4e: case 0xd82: case 0xd85: // X1 X1C X2 X3 X4 X925
++			return 300;
++		default:
++			return 0;
++		}
++	}
++
++	static std::vector<long> ReadCpuPartScores(long cpuCount)
++	{
++		std::vector<long> scores(cpuCount, 0);
++		std::ifstream f("/proc/cpuinfo");
++		std::string line;
++		long current = -1;
++		while (std::getline(f, line))
++		{
++			if (line.rfind("processor", 0) == 0)
++			{
++				size_t c = line.find(':');
++				current = c == std::string::npos ? -1 : std::strtol(line.c_str() + c + 1, nullptr, 10);
++			}
++			else if (line.rfind("CPU part", 0) == 0 && current >= 0 && current < cpuCount)
+ 			{
+-				std::ifstream f("/sys/devices/system/cpu/cpu" + std::to_string(i) + "/cpufreq/cpuinfo_max_freq");
+-				long v = 0;
+-				if (f.is_open() && (f >> v))
+-					freq[i] = v;
+-				maxFreq = std::max(maxFreq, freq[i]);
++				size_t c = line.find(':');
++				if (c != std::string::npos)
++					scores[current] = CpuPartScore((unsigned)std::strtoul(line.c_str() + c + 1, nullptr, 16));
+ 			}
+-			if (maxFreq <= 0)
+-				return result; // topology unknown -> don't touch affinity
++		}
++		return scores;
++	}
++
++	static const Layout::CpuLayout& GetCpuLayout()
++	{
++		static const Layout::CpuLayout s_layout = []() {
++			long cpuCount = sysconf(_SC_NPROCESSORS_CONF);
++			Layout::CpuLayout result;
++			if (cpuCount <= 1 || cpuCount > CPU_SETSIZE)
++				return result;
++			std::vector<Layout::CoreInfo> cores;
++			std::vector<long> partScores;
+ 			for (long i = 0; i < cpuCount; i++)
+ 			{
+-				if (freq[i] * 10 >= maxFreq * 7)
+-					result.push_back((int)i);
++				const std::string base = "/sys/devices/system/cpu/cpu" + std::to_string(i);
++				long metric = ReadLongFile(base + "/cpu_capacity");
++				if (metric <= 0)
++					metric = ReadLongFile(base + "/cpufreq/cpuinfo_max_freq");
++				if (metric <= 0)
++				{
++					if (partScores.empty())
++						partScores = ReadCpuPartScores(cpuCount);
++					metric = partScores[i];
++				}
++				cores.push_back({(int)i, metric});
+ 			}
+-			if ((long)result.size() == cpuCount)
+-				result.clear(); // symmetric CPU, nothing to gain
++			result = Layout::BuildLayout(cores);
++			cemuLog_log(LogType::Force, "AndroidTweaks: {}", Layout::Describe(result));
+ 			return result;
+ 		}();
+-		return s_cores;
++		return s_layout;
+ 	}
+-#endif
+ 
+-	void ApplyThreadTuning(ThreadRole role)
++	// --- applying placement -----------------------------------------------------------------------------------
++
++	static void ApplyCores(const std::vector<int>& cores)
+ 	{
+-		(void)role;
+-#if defined(__ANDROID__)
+-		if (!GetConfig().bigCoreAffinity)
+-			return;
+-		const auto& cores = GetPerformanceCores();
+ 		if (cores.empty())
+ 			return;
+ 		cpu_set_t set;
+ 		CPU_ZERO(&set);
+ 		for (int c : cores)
+ 			CPU_SET(c, &set);
+-		// failure (vendor restrictions, cgroups) is harmless
++		// 0 = calling thread. Failure (vendor restrictions, cgroups) is harmless.
+ 		sched_setaffinity(0, sizeof(set), &set);
++	}
++
++	static void ApplyNice(int nice)
++	{
++		// Best effort. Raising priority (negative nice) may be refused for apps, lowering never is.
++		setpriority(PRIO_PROCESS, (id_t)syscall(SYS_gettid), nice);
++	}
++#endif
++
++	void ApplyThreadTuning(ThreadRole role, int emuCoreIndex, int emuThreadCount)
++	{
++#if defined(__ANDROID__)
++		if (!GetConfig().bigCoreAffinity)
++			return;
++		const auto& layout = GetCpuLayout();
++		if (!layout.valid)
++			return;
++		const Layout::Role layoutRole = role == ThreadRole::Gpu ? Layout::Role::Gpu : Layout::Role::Emulation;
++		ApplyCores(Layout::PlanCores(layout, layoutRole, emuCoreIndex, emuThreadCount));
++		ApplyNice(-4);
++#else
++		(void)role;
++		(void)emuCoreIndex;
++		(void)emuThreadCount;
++#endif
++	}
++
++	void ApplyThreadTuningByName(const char* threadName)
++	{
++#if defined(__ANDROID__)
++		const auto& cfg = GetConfig();
++		if (!cfg.bigCoreAffinity || !threadName)
++			return;
++		Layout::Role role;
++		if (!Layout::RoleFromThreadName(threadName, role))
++			return;
++		if (role == Layout::Role::Helper && !cfg.helperThreadDemotion)
++			return;
++		const auto& layout = GetCpuLayout();
++		if (!layout.valid)
++			return;
++		// always set explicitly: threads inherit the affinity of the thread that created them
++		ApplyCores(Layout::PlanCores(layout, role));
++		if (role == Layout::Role::Helper)
++			ApplyNice(8);
++#else
++		(void)threadName;
+ #endif
+ 	}
+ }
+diff -ruN a/src/util/helpers/AndroidTweaks.h b/src/util/helpers/AndroidTweaks.h
+--- a/src/util/helpers/AndroidTweaks.h	2026-11-14 23:21:28.487856943 +0000
++++ b/src/util/helpers/AndroidTweaks.h	2026-11-14 23:21:59.385881372 +0000
+@@ -7,8 +7,13 @@
+ {
+ 	struct Config
+ 	{
+-		// Pin emulation / GPU host threads to the faster CPU cores (big.LITTLE devices). Harmless if the kernel refuses.
++		// Topology-aware thread placement on big.LITTLE devices (harmless if the kernel refuses):
++		// Latte thread -> prime core, the 3 PPC scheduler threads -> one big core each (when >= 4 big cores exist),
++		// PPC recompiler -> big cores. Falls back to "any big core" on SoCs with fewer big cores.
+ 		bool bigCoreAffinity = true;
++		// Keep shader/pipeline compile + cache/IO helper threads off the cores reserved above and lower their
++		// priority, so they can't steal time from the emulation threads. Only active together with bigCoreAffinity.
++		bool helperThreadDemotion = true;
+ 		// Add VK_DEPENDENCY_BY_REGION_BIT to the memory barriers issued between render passes (Adreno only).
+ 		// Experimental: only has a defined effect for framebuffer-space stages, may be a no-op.
+ 		bool byRegionBarriers = false;
+@@ -25,6 +30,12 @@
+ 		Gpu        // Latte command processor thread
+ 	};
+ 
+-	// Call from the thread that should be tuned
+-	void ApplyThreadTuning(ThreadRole role);
++	// Call from the thread that should be tuned.
++	// emuCoreIndex / emuThreadCount: PPC core index of this scheduler thread and how many scheduler threads exist
++	// (1 in single-core mode, 3 in multi-core mode). Only used for ThreadRole::Emulation.
++	void ApplyThreadTuning(ThreadRole role, int emuCoreIndex = 0, int emuThreadCount = 3);
++
++	// Called from SetThreadName(): applies the right placement to well-known helper threads by name
++	// (compile threads, cache writers, PPC recompiler, ...). Unknown names are left alone.
++	void ApplyThreadTuningByName(const char* threadName);
+ }
+diff -ruN a/src/util/helpers/AndroidTweaksLayout.h b/src/util/helpers/AndroidTweaksLayout.h
+--- a/src/util/helpers/AndroidTweaksLayout.h	1970-01-01 00:00:00.000000000 +0000
++++ b/src/util/helpers/AndroidTweaksLayout.h	2026-11-14 23:21:42.713312444 +0000
+@@ -0,0 +1,158 @@
++#pragma once
++
++// Pure (no OS / no Cemu dependencies) CPU layout logic used by AndroidTweaks.
++// Kept header-only so it can be unit tested on a desktop machine.
++
++#include <algorithm>
++#include <cstdint>
++#include <string>
++#include <vector>
++
++namespace AndroidTweaks::Layout
++{
++	struct CoreInfo
++	{
++		int id = 0;
++		// Any monotonic "how fast is this core" number: cpu_capacity, cpuinfo_max_freq or a CPU-part score.
++		// 0 / negative = unknown.
++		long metric = 0;
++	};
++
++	enum class Role
++	{
++		Gpu,         // Latte command processor thread (the Vulkan driver runs on it too)
++		Emulation,   // PPC core scheduler thread
++		Recompiler,  // PPC JIT worker: latency sensitive, but not a permanent 100% thread
++		Helper       // shader / pipeline compile, cache writers, loaders: throughput work that must not steal big cores
++	};
++
++	struct CpuLayout
++	{
++		std::vector<int> big;    // every non-little core, strongest first
++		std::vector<int> little; // efficiency cores
++		std::vector<int> all;
++		// true when there are enough big cores to give Latte + 3 PPC threads one core each
++		bool exclusive = false;
++		bool valid = false;
++	};
++
++	// Groups cores into clusters (a core joins the current cluster while its metric is within 10% of the
++	// cluster's fastest core), then treats the slowest cluster as "little" if there is more than one cluster.
++	// Symmetric CPUs (one cluster) or unknown topology give valid == false -> callers must not touch affinity.
++	inline CpuLayout BuildLayout(std::vector<CoreInfo> cores)
++	{
++		CpuLayout out;
++		for (const auto& c : cores)
++			out.all.push_back(c.id);
++		if (cores.size() < 2)
++			return out;
++		for (const auto& c : cores)
++			if (c.metric <= 0)
++				return out; // topology unknown
++
++		// strongest first, ties -> higher id first (big cores usually have the higher ids)
++		std::sort(cores.begin(), cores.end(), [](const CoreInfo& a, const CoreInfo& b) {
++			if (a.metric != b.metric)
++				return a.metric > b.metric;
++			return a.id > b.id;
++		});
++
++		std::vector<std::vector<CoreInfo>> clusters;
++		for (const auto& c : cores)
++		{
++			if (!clusters.empty() && c.metric * 10 >= clusters.back().front().metric * 9)
++				clusters.back().push_back(c);
++			else
++				clusters.push_back({c});
++		}
++		if (clusters.size() < 2)
++			return out; // symmetric
++
++		for (size_t i = 0; i < clusters.size(); i++)
++		{
++			for (const auto& c : clusters[i])
++			{
++				if (i + 1 == clusters.size())
++					out.little.push_back(c.id);
++				else
++					out.big.push_back(c.id);
++			}
++		}
++		std::sort(out.little.begin(), out.little.end());
++		std::sort(out.all.begin(), out.all.end());
++		out.exclusive = out.big.size() >= 4;
++		out.valid = !out.big.empty() && !out.little.empty();
++		return out;
++	}
++
++	// Which host cores a thread should be allowed to run on.
++	// emuCoreIndex / emuThreadCount only matter for Role::Emulation.
++	inline std::vector<int> PlanCores(const CpuLayout& l, Role role, int emuCoreIndex = 0, int emuThreadCount = 3)
++	{
++		if (!l.valid)
++			return {};
++		switch (role)
++		{
++		case Role::Gpu:
++			return l.exclusive ? std::vector<int>{l.big[0]} : l.big;
++		case Role::Emulation:
++		{
++			if (!l.exclusive)
++				return l.big;
++			// PPC core 1 usually runs the game's main thread -> best core after the GPU thread's one
++			int slot = 0;
++			if (emuThreadCount > 1)
++				slot = (emuCoreIndex == 1) ? 0 : (emuCoreIndex == 0 ? 1 : 2);
++			return {l.big[1 + slot]};
++		}
++		case Role::Recompiler:
++			return l.big;
++		case Role::Helper:
++		default:
++		{
++			if (!l.exclusive)
++				return l.all;
++			// everything except the cores reserved for Latte + the PPC threads
++			std::vector<int> r(l.big.begin() + 4, l.big.end());
++			r.insert(r.end(), l.little.begin(), l.little.end());
++			std::sort(r.begin(), r.end());
++			return r;
++		}
++		}
++	}
++
++	// Maps a thread name (as given to SetThreadName) to a role. Returns false for threads we leave alone.
++	inline bool RoleFromThreadName(const std::string& name, Role& role)
++	{
++		static const char* const helperNames[] = {
++			"compilePl", "vkShaderComp", "plCacheCompiler", "plCacheWriter", "vkDriverPlCache",
++			"bootsnd", "fileCache", "cemuLog_thread", "TitleListWorker", "SaveListWorker"};
++		for (const char* n : helperNames)
++		{
++			if (name == n)
++			{
++				role = Role::Helper;
++				return true;
++			}
++		}
++		if (name == "PPCRecompiler")
++		{
++			role = Role::Recompiler;
++			return true;
++		}
++		return false;
++	}
++
++	inline std::string Describe(const CpuLayout& l)
++	{
++		auto list = [](const std::vector<int>& v) {
++			std::string s;
++			for (int c : v)
++				s += (s.empty() ? "" : ",") + std::to_string(c);
++			return s.empty() ? std::string("-") : s;
++		};
++		if (!l.valid)
++			return "symmetric or unknown CPU topology, affinity untouched";
++		return "big(strongest first)=[" + list(l.big) + "] little=[" + list(l.little) + "] mode=" + (l.exclusive ? "exclusive" : "shared");
++	}
++}
+diff -ruN a/src/util/helpers/helpers.cpp b/src/util/helpers/helpers.cpp
+--- a/src/util/helpers/helpers.cpp	2026-11-14 23:21:28.487981077 +0000
++++ b/src/util/helpers/helpers.cpp	2026-11-14 23:22:23.513993657 +0000
+@@ -6,6 +6,7 @@
+ #include <random>
+ 
+ #include "config/ActiveSettings.h"
++#include "util/helpers/AndroidTweaks.h"
+ 
+ #include <boost/random/uniform_int.hpp>
+ 
+@@ -149,6 +150,7 @@
+ 	if(std::strlen(name) > 15)
+ 		cemuLog_log(LogType::Force, "Truncating thread name {} because it was longer than 15 characters", name);
+ 	pthread_setname_np(pthread_self(), std::string{name}.substr(0,15).c_str());
++	AndroidTweaks::ApplyThreadTuningByName(name);
+ #endif
+ }
+ 
