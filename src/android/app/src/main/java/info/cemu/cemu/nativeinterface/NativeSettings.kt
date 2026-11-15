@@ -19,6 +19,12 @@ object NativeSettings {
     @JvmStatic
     external fun setAsyncShaderCompile(value: Boolean)
 
+    @JvmStatic
+    external fun getGX2DrawDoneSync(): Boolean
+
+    @JvmStatic
+    external fun setGX2DrawDoneSync(value: Boolean)
+
     object VSyncMode {
         const val OFF: Int = 0
         const val DOUBLE_BUFFERING: Int = 1

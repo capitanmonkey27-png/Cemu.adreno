@@ -6,6 +6,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.navigation
 import androidx.navigation.toRoute
 import info.cemu.cemu.settings.account.AccountSettingsScreen
+import info.cemu.cemu.settings.adrenotweaks.AdrenoTweaksScreen
 import info.cemu.cemu.settings.audio.AudioSettingsScreen
 import info.cemu.cemu.settings.customdrivers.CustomDriversScreen
 import info.cemu.cemu.settings.emulatedusbdevices.EmulatedUSBDevicesSettingsScreen
@@ -41,6 +42,9 @@ private object SettingsRoutes {
 
     @Serializable
     object GraphicsSettingsScreenRoute
+
+    @Serializable
+    object AdrenoTweaksScreenRoute
 
     @Serializable
     object CustomDriversScreenRoute
@@ -81,6 +85,7 @@ fun NavGraphBuilder.settingsNavigation(navController: NavHostController) {
                 goToGeneralSettings = { navController.navigate(SettingsRoutes.GeneralSettings) },
                 goToInputSettings = { navController.navigate(SettingsRoutes.InputSettingsRoute) },
                 goToGraphicsSettings = { navController.navigate(SettingsRoutes.GraphicsSettingsScreenRoute) },
+                goToAdrenoTweaksSettings = { navController.navigate(SettingsRoutes.AdrenoTweaksScreenRoute) },
                 goToAudioSettings = { navController.navigate(SettingsRoutes.AudioSettingsScreenRoute) },
                 goToOverlaySettings = { navController.navigate(SettingsRoutes.OverlaySettingsScreenRoute) },
                 goToAccountSettings = { navController.navigate(SettingsRoutes.AccountSettingsScreenRoute) },
@@ -98,6 +103,11 @@ fun NavGraphBuilder.settingsNavigation(navController: NavHostController) {
                 goToCustomDriversSettings = {
                     navController.navigate(SettingsRoutes.CustomDriversScreenRoute)
                 }
+            )
+        }
+        composable<SettingsRoutes.AdrenoTweaksScreenRoute> {
+            AdrenoTweaksScreen(
+                navigateBack = { navController.popBackStack() },
             )
         }
         composable<SettingsRoutes.CustomDriversScreenRoute> {

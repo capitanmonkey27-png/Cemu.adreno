@@ -11,6 +11,7 @@ fun SettingsHomeScreen(
     goToGeneralSettings: () -> Unit,
     goToInputSettings: () -> Unit,
     goToGraphicsSettings: () -> Unit,
+    goToAdrenoTweaksSettings: () -> Unit,
     goToEmulatedUSBDevicesSettings: () -> Unit,
     goToAudioSettings: () -> Unit,
     goToAccountSettings: () -> Unit,
@@ -32,6 +33,10 @@ fun SettingsHomeScreen(
         Button(
             label = tr("Graphics settings"),
             onClick = dropUnlessResumed(block = goToGraphicsSettings)
+        )
+        Button(
+            label = tr("Adreno tweaks"),
+            onClick = dropUnlessResumed(block = goToAdrenoTweaksSettings)
         )
         Button(
             label = tr("Audio settings"),

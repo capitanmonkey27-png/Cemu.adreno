@@ -5,6 +5,7 @@
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanTextureReadback.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/CocoaSurface.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.h"
+#include "util/helpers/AndroidTweaks.h"
 
 #include "Cafe/HW/Latte/Core/LatteBufferCache.h"
 #include "Cafe/HW/Latte/Core/LattePerformanceMonitor.h"
@@ -644,8 +645,18 @@ VulkanRenderer::VulkanRenderer()
 	}
 	else
 	{
-		cemuLog_log(LogType::Force, "VK_EXT_pipeline_robustness not supported. Falling back to robustBufferAccess");
-		deviceFeatures.robustBufferAccess = VK_TRUE;
+#ifdef __ANDROID__
+		if (AndroidTweaks::GetConfig().skipDeviceRobustBufferAccess)
+		{
+			cemuLog_log(LogType::Force, "VK_EXT_pipeline_robustness not supported. robustBufferAccess stays OFF (skipDeviceRobustBufferAccess=1)");
+			deviceFeatures.robustBufferAccess = VK_FALSE;
+		}
+		else
+#endif
+		{
+			cemuLog_log(LogType::Force, "VK_EXT_pipeline_robustness not supported. Falling back to robustBufferAccess");
+			deviceFeatures.robustBufferAccess = VK_TRUE;
+		}
 	}
 
 	if (m_featureControl.mode.useTFEmulationViaSSBO)
