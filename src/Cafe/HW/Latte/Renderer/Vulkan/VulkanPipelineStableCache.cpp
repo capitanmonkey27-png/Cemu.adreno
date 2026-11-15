@@ -6,6 +6,7 @@
 #include "Cafe/HW/Latte/Core/LatteCachedFBO.h"
 #include "Cafe/OS/libs/gx2/GX2.h"
 #include "config/ActiveSettings.h"
+#include "util/helpers/AndroidTweaks.h"
 #include "util/helpers/Serializer.h"
 #include "Cafe/HW/Latte/Common/RegisterSerializer.h"
 #include "Cemu/FileCache/FileCache.h"
@@ -48,6 +49,7 @@ uint32 VulkanPipelineStableCache::BeginLoading(uint64 cacheTitleId)
 	// get core count
 	uint32 cpuCoreCount = GetPhysicalCoreCount();
 	m_numCompilationThreads = std::clamp(cpuCoreCount, 1u, 8u);
+	m_numCompilationThreads = AndroidTweaks::LimitCompileThreads(m_numCompilationThreads);
 	if (VulkanRenderer::GetInstance()->GetDisableMultithreadedCompilation())
 		m_numCompilationThreads = 1;
 

@@ -10,12 +10,18 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <mutex>
 
 #if defined(__ANDROID__)
 #include <sched.h>
 #include <unistd.h>
 #include <sys/resource.h>
 #include <sys/syscall.h>
+#include <dirent.h>
+#include <chrono>
+#include <cstdio>
+#include <thread>
+#include <unordered_map>
 #endif
 
 namespace AndroidTweaks
@@ -29,53 +35,82 @@ namespace AndroidTweaks
 		return s.substr(b, e - b + 1);
 	}
 
-	static const char* kDefaultFile =
-		"# Android/Adreno performance tweaks (1 = on, 0 = off)\n"
-		"# Place Latte / PPC threads on dedicated big cores (topology aware)\n"
-		"bigCoreAffinity=1\n"
-		"# Keep compile / cache helper threads off those cores and lower their priority\n"
-		"helperThreadDemotion=1\n"
-		"# Experimental: by-region barriers between render passes (Adreno only, may be a no-op)\n"
-		"byRegionBarriers=0\n"
-		"# Experimental: FP16 rewrite of generated GLSL (Adreno only, falls back per shader on compile errors).\n"
-		"# Clear the shader caches after changing this.\n"
-		"fp16ShaderRewrite=0\n";
+	// One entry per switch. Drives the config file (read/write) and the in-app "Adreno tweaks" screen.
+	struct FlagDesc
+	{
+		const char* key;
+		bool Config::* member;
+		const char* comment;
+	};
+
+	static const FlagDesc kFlags[] = {
+		{"bigCoreAffinity", &Config::bigCoreAffinity, "Place Latte / PPC threads on dedicated big cores (topology aware)"},
+		{"helperThreadDemotion", &Config::helperThreadDemotion, "Keep compile / cache helper threads off those cores and lower their priority"},
+		{"limitCompileThreads", &Config::limitCompileThreads, "Cap shader compile threads at the number of little cores (less oversubscription, less peak RAM)"},
+		{"byRegionBarriers", &Config::byRegionBarriers, "Experimental: by-region barriers between render passes (Adreno only, may be a no-op)"},
+		{"fp16ShaderRewrite", &Config::fp16ShaderRewrite, "Experimental: FP16 rewrite of generated GLSL (Adreno only, falls back per shader on compile errors). Clear the shader caches after changing this."},
+		{"threadCpuLog", &Config::threadCpuLog, "Diagnostic: every 5 s log the busiest threads and the core they ran on (first ~10 minutes of a game)"},
+		{"skipDeviceRobustBufferAccess", &Config::skipDeviceRobustBufferAccess, "Experimental: leave device-wide robustBufferAccess off when VK_EXT_pipeline_robustness is missing. Can be faster on Adreno/Turnip, but may cause garbage or GPU hangs in games that read out of bounds."},
+	};
+
+	static const FlagDesc* FindFlag(const char* key)
+	{
+		if (!key)
+			return nullptr;
+		for (const FlagDesc& f : kFlags)
+			if (std::string(f.key) == key)
+				return &f;
+		return nullptr;
+	}
+
+	static std::filesystem::path ConfigFilePath()
+	{
+		return ActiveSettings::GetConfigPath("adreno_tweaks.txt");
+	}
+
+	static void WriteConfig(std::ostream& out, const Config& cfg)
+	{
+		out << "# Android/Adreno performance tweaks (1 = on, 0 = off)\n";
+		out << "# Changes made in the app (Settings > Adreno tweaks) are written here; they apply after an app restart.\n";
+		for (const FlagDesc& f : kFlags)
+			out << "# " << f.comment << "\n" << f.key << "=" << (cfg.*(f.member) ? 1 : 0) << "\n";
+	}
+
+	// Returns false if the file could not be opened (cfg keeps its defaults in that case).
+	static bool ReadConfigFile(const std::filesystem::path& path, Config& cfg)
+	{
+		std::ifstream in(path);
+		if (!in.is_open())
+			return false;
+		std::string line;
+		while (std::getline(in, line))
+		{
+			size_t hash = line.find('#');
+			if (hash != std::string::npos)
+				line.erase(hash);
+			size_t eq = line.find('=');
+			if (eq == std::string::npos)
+				continue;
+			std::string key = Trim(line.substr(0, eq));
+			std::string val = Trim(line.substr(eq + 1));
+			bool on = (val == "1" || val == "true" || val == "on");
+			if (const FlagDesc* f = FindFlag(key.c_str()))
+				cfg.*(f->member) = on;
+		}
+		return true;
+	}
 
 	static Config LoadConfig()
 	{
 		Config cfg;
-		std::filesystem::path path;
 		try
 		{
-			path = ActiveSettings::GetConfigPath("adreno_tweaks.txt");
-			std::ifstream in(path);
-			if (!in.is_open())
+			const std::filesystem::path path = ConfigFilePath();
+			if (!ReadConfigFile(path, cfg))
 			{
 				std::ofstream out(path);
 				if (out.is_open())
-					out << kDefaultFile;
-				return cfg;
-			}
-			std::string line;
-			while (std::getline(in, line))
-			{
-				size_t hash = line.find('#');
-				if (hash != std::string::npos)
-					line.erase(hash);
-				size_t eq = line.find('=');
-				if (eq == std::string::npos)
-					continue;
-				std::string key = Trim(line.substr(0, eq));
-				std::string val = Trim(line.substr(eq + 1));
-				bool on = (val == "1" || val == "true" || val == "on");
-				if (key == "bigCoreAffinity")
-					cfg.bigCoreAffinity = on;
-				else if (key == "helperThreadDemotion")
-					cfg.helperThreadDemotion = on;
-				else if (key == "byRegionBarriers")
-					cfg.byRegionBarriers = on;
-				else if (key == "fp16ShaderRewrite")
-					cfg.fp16ShaderRewrite = on;
+					WriteConfig(out, cfg);
 			}
 		}
 		catch (...)
@@ -89,6 +124,69 @@ namespace AndroidTweaks
 	{
 		static const Config s_config = LoadConfig(); // thread-safe init
 		return s_config;
+	}
+
+	// --- settings screen support ------------------------------------------------------------------------------
+	// GetConfig() is read once per process, so the screen edits a separate "saved" copy that is written to the
+	// config file on every change. IsActiveFlag() tells the screen what the running process is using.
+
+	static std::mutex s_savedMutex;
+	static Config s_saved;
+	static bool s_savedLoaded = false;
+
+	static Config& SavedConfigLocked()
+	{
+		if (!s_savedLoaded)
+		{
+			try
+			{
+				ReadConfigFile(ConfigFilePath(), s_saved);
+			}
+			catch (...)
+			{
+			}
+			s_savedLoaded = true;
+		}
+		return s_saved;
+	}
+
+	bool GetSavedFlag(const char* key)
+	{
+		const FlagDesc* f = FindFlag(key);
+		if (!f)
+			return false;
+		std::lock_guard lock(s_savedMutex);
+		return SavedConfigLocked().*(f->member);
+	}
+
+	bool IsActiveFlag(const char* key)
+	{
+		const FlagDesc* f = FindFlag(key);
+		if (!f)
+			return false;
+		return GetConfig().*(f->member);
+	}
+
+	bool SetSavedFlag(const char* key, bool value)
+	{
+		const FlagDesc* f = FindFlag(key);
+		if (!f)
+			return false;
+		std::lock_guard lock(s_savedMutex);
+		Config& cfg = SavedConfigLocked();
+		cfg.*(f->member) = value;
+		try
+		{
+			std::ofstream out(ConfigFilePath(), std::ios::trunc);
+			if (!out.is_open())
+				return false;
+			WriteConfig(out, cfg);
+			return true;
+		}
+		catch (...)
+		{
+			return false;
+		}
 	}
 
 #if defined(__ANDROID__)
@@ -216,9 +314,106 @@ namespace AndroidTweaks
 	}
 #endif
 
+#if defined(__ANDROID__)
+	// --- optional diagnostic: per-thread CPU census (threadCpuLog) -------------------------------------------
+	struct ThreadSample
+	{
+		std::string name;
+		unsigned long long ticks = 0;
+		int cpu = -1;
+	};
+
+	// Parses /proc/self/task/<tid>/stat. Field numbers below are the ones from proc(5).
+	static bool ReadThreadStat(const std::string& taskDir, ThreadSample& out)
+	{
+		std::ifstream f(taskDir + "/stat");
+		std::string line;
+		if (!f.is_open() || !std::getline(f, line))
+			return false;
+		const size_t open = line.find('(');
+		const size_t close = line.rfind(')'); // the thread name may itself contain ')' or spaces
+		if (open == std::string::npos || close == std::string::npos || close < open)
+			return false;
+		out.name = line.substr(open + 1, close - open - 1);
+		std::istringstream rest(line.substr(close + 1));
+		std::vector<std::string> fields; // fields[0] is stat field 3 (state)
+		std::string tok;
+		while (rest >> tok)
+			fields.push_back(tok);
+		if (fields.size() < 37)
+			return false;
+		out.ticks = std::strtoull(fields[11].c_str(), nullptr, 10) + std::strtoull(fields[12].c_str(), nullptr, 10); // utime + stime
+		out.cpu = std::atoi(fields[36].c_str()); // processor
+		return true;
+	}
+
+	static void CpuCensusMain()
+	{
+		const long clkTck = std::max(1L, sysconf(_SC_CLK_TCK));
+		std::unordered_map<int, unsigned long long> prevTicks;
+		auto prevTime = std::chrono::steady_clock::now();
+		for (int sample = 0; sample < 120; sample++) // ~10 minutes, then stop
+		{
+			std::this_thread::sleep_for(std::chrono::seconds(5));
+			const auto now = std::chrono::steady_clock::now();
+			const double secs = std::chrono::duration<double>(now - prevTime).count();
+			prevTime = now;
+
+			struct Row
+			{
+				std::string name;
+				int tid;
+				double pct;
+				int cpu;
+			};
+			std::vector<Row> rows;
+			double total = 0.0;
+			if (DIR* dir = opendir("/proc/self/task"))
+			{
+				while (dirent* e = readdir(dir))
+				{
+					const int tid = std::atoi(e->d_name);
+					if (tid <= 0)
+						continue;
+					ThreadSample s;
+					if (!ReadThreadStat("/proc/self/task/" + std::to_string(tid), s))
+						continue;
+					auto it = prevTicks.find(tid);
+					const unsigned long long before = it != prevTicks.end() ? it->second : s.ticks; // first sight: no delta yet
+					prevTicks[tid] = s.ticks;
+					const double pct = secs > 0.0 ? 100.0 * double(s.ticks - before) / (double(clkTck) * secs) : 0.0;
+					total += pct;
+					if (pct >= 3.0)
+						rows.push_back({s.name, tid, pct, s.cpu});
+				}
+				closedir(dir);
+			}
+			std::sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) { return a.pct > b.pct; });
+			std::string msg;
+			for (size_t i = 0; i < rows.size() && i < 10; i++)
+			{
+				char buf[128];
+				snprintf(buf, sizeof(buf), "%s%s(%d)=%.0f%%@cpu%d", i ? " " : "", rows[i].name.c_str(), rows[i].tid, rows[i].pct, rows[i].cpu);
+				msg += buf;
+			}
+			cemuLog_log(LogType::Force, "AndroidTweaks: census total={:.0f}% {}", total, msg.empty() ? std::string("(idle)") : msg);
+		}
+	}
+
+	// Started from the Latte thread BEFORE it pins itself, so the census thread keeps the full affinity mask
+	// and never competes with the Latte thread for its core. It is not named (no SetThreadName) on purpose.
+	static void StartCpuCensus()
+	{
+		static std::once_flag s_once;
+		std::call_once(s_once, []() { std::thread(CpuCensusMain).detach(); });
+	}
+#endif
+
 	void ApplyThreadTuning(ThreadRole role, int emuCoreIndex, int emuThreadCount)
 	{
 #if defined(__ANDROID__)
+		if (role == ThreadRole::Gpu && GetConfig().threadCpuLog)
+			StartCpuCensus();
 		if (!GetConfig().bigCoreAffinity)
 			return;
 		const auto& layout = GetCpuLayout();
@@ -264,6 +459,31 @@ namespace AndroidTweaks
 			ApplyNice(8);
 #else
 		(void)threadName;
+#endif
+	}
+
+	unsigned LimitCompileThreads(unsigned requested)
+	{
+#if defined(__ANDROID__)
+		const auto& cfg = GetConfig();
+		// helpers are only confined to the little cores in exclusive mode (see ApplyThreadTuningByName)
+		if (!cfg.limitCompileThreads || !cfg.bigCoreAffinity || !cfg.helperThreadDemotion)
+			return requested;
+		const auto& layout = GetCpuLayout();
+		if (!layout.valid || !layout.exclusive || layout.little.empty())
+			return requested;
+		return std::max(1u, std::min(requested, (unsigned)layout.little.size()));
+#else
+		return requested;
+#endif
+	}
+
+	std::string DescribeCpuLayout()
+	{
+#if defined(__ANDROID__)
+		return Layout::Describe(GetCpuLayout());
+#else
+		return "not an Android device";
 #endif
 	}
 }

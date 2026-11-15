@@ -207,6 +207,18 @@ Java_info_cemu_cemu_nativeinterface_NativeSettings_setAsyncShaderCompile([[maybe
 	GetConfig().async_compile = enabled;
 }
 
+extern "C" [[maybe_unused]] JNIEXPORT jboolean JNICALL
+Java_info_cemu_cemu_nativeinterface_NativeSettings_getGX2DrawDoneSync([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz)
+{
+	return GetConfig().gx2drawdone_sync;
+}
+
+extern "C" [[maybe_unused]] JNIEXPORT void JNICALL
+Java_info_cemu_cemu_nativeinterface_NativeSettings_setGX2DrawDoneSync([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz, jboolean enabled)
+{
+	GetConfig().gx2drawdone_sync = enabled;
+}
+
 extern "C" [[maybe_unused]] JNIEXPORT jint JNICALL
 Java_info_cemu_cemu_nativeinterface_NativeSettings_getVsyncMode([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz)
 {

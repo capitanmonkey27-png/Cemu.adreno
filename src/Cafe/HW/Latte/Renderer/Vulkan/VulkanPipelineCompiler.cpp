@@ -7,6 +7,7 @@
 #include "Cafe/OS/libs/gx2/GX2.h"
 #include "config/ActiveSettings.h"
 #include "util/helpers/helpers.h"
+#include "util/helpers/AndroidTweaks.h"
 #include "util/helpers/Serializer.h"
 #include "Cafe/HW/Latte/Common/RegisterSerializer.h"
 
@@ -1156,6 +1157,7 @@ void PipelineCompiler::CompileThreadPool_Start()
 		numCompileThreads = 2 + (cpuCoreCount - 3); // 2 plus one additionally for every extra core above 3
 
 	numCompileThreads = std::min(numCompileThreads, 8u); // cap at 8
+	numCompileThreads = AndroidTweaks::LimitCompileThreads(numCompileThreads);
 
 	for (uint32_t i = 0; i < numCompileThreads; i++)
 	{
