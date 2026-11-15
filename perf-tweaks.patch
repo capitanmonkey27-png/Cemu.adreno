@@ -1,0 +1,126 @@
+diff --git a/src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp b/src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp
+--- a/src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp	2026-11-15 12:35:11.144258302 +0000
++++ b/src/Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.cpp	2026-11-15 12:35:11.145701824 +0000
+@@ -7,6 +7,7 @@
+ #include "Cafe/OS/libs/gx2/GX2.h"
+ #include "config/ActiveSettings.h"
+ #include "util/helpers/helpers.h"
++#include "util/helpers/AndroidTweaks.h"
+ #include "util/helpers/Serializer.h"
+ #include "Cafe/HW/Latte/Common/RegisterSerializer.h"
+ 
+@@ -1156,6 +1157,7 @@
+ 		numCompileThreads = 2 + (cpuCoreCount - 3); // 2 plus one additionally for every extra core above 3
+ 
+ 	numCompileThreads = std::min(numCompileThreads, 8u); // cap at 8
++	numCompileThreads = AndroidTweaks::LimitCompileThreads(numCompileThreads);
+ 
+ 	for (uint32_t i = 0; i < numCompileThreads; i++)
+ 	{
+diff --git a/src/Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.cpp b/src/Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.cpp
+--- a/src/Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.cpp	2026-11-15 12:35:11.151075532 +0000
++++ b/src/Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.cpp	2026-11-15 12:35:11.152535203 +0000
+@@ -5,6 +5,7 @@
+ #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanTextureReadback.h"
+ #include "Cafe/HW/Latte/Renderer/Vulkan/CocoaSurface.h"
+ #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.h"
++#include "util/helpers/AndroidTweaks.h"
+ 
+ #include "Cafe/HW/Latte/Core/LatteBufferCache.h"
+ #include "Cafe/HW/Latte/Core/LattePerformanceMonitor.h"
+@@ -644,8 +645,18 @@
+ 	}
+ 	else
+ 	{
+-		cemuLog_log(LogType::Force, "VK_EXT_pipeline_robustness not supported. Falling back to robustBufferAccess");
+-		deviceFeatures.robustBufferAccess = VK_TRUE;
++#ifdef __ANDROID__
++		if (AndroidTweaks::GetConfig().skipDeviceRobustBufferAccess)
++		{
++			cemuLog_log(LogType::Force, "VK_EXT_pipeline_robustness not supported. robustBufferAccess stays OFF (skipDeviceRobustBufferAccess=1)");
++			deviceFeatures.robustBufferAccess = VK_FALSE;
++		}
++		else
++#endif
++		{
++			cemuLog_log(LogType::Force, "VK_EXT_pipeline_robustness not supported. Falling back to robustBufferAccess");
++			deviceFeatures.robustBufferAccess = VK_TRUE;
++		}
+ 	}
+ 
+ 	if (m_featureControl.mode.useTFEmulationViaSSBO)
+diff --git a/src/util/helpers/AndroidTweaks.cpp b/src/util/helpers/AndroidTweaks.cpp
+--- a/src/util/helpers/AndroidTweaks.cpp	2026-11-15 12:35:11.137512598 +0000
++++ b/src/util/helpers/AndroidTweaks.cpp	2026-11-15 12:35:11.139015081 +0000
+@@ -37,7 +37,12 @@
+ 		"byRegionBarriers=0\n"
+ 		"# Experimental: FP16 rewrite of generated GLSL (Adreno only, falls back per shader on compile errors).\n"
+ 		"# Clear the shader caches after changing this.\n"
+-		"fp16ShaderRewrite=0\n";
++		"fp16ShaderRewrite=0\n"
++		"# Cap shader compile threads at the number of little cores (less oversubscription, less peak RAM)\n"
++		"limitCompileThreads=1\n"
++		"# Experimental: leave device-wide robustBufferAccess off when VK_EXT_pipeline_robustness is missing.\n"
++		"# Can be faster on Adreno/Turnip, but may cause garbage or GPU hangs in games that read out of bounds.\n"
++		"skipDeviceRobustBufferAccess=0\n";
+ 
+ 	static Config LoadConfig()
+ 	{
+@@ -74,6 +79,10 @@
+ 					cfg.byRegionBarriers = on;
+ 				else if (key == "fp16ShaderRewrite")
+ 					cfg.fp16ShaderRewrite = on;
++				else if (key == "limitCompileThreads")
++					cfg.limitCompileThreads = on;
++				else if (key == "skipDeviceRobustBufferAccess")
++					cfg.skipDeviceRobustBufferAccess = on;
+ 			}
+ 		}
+ 		catch (...)
+@@ -231,4 +240,20 @@
+ 		(void)threadName;
+ #endif
+ 	}
++
++	unsigned LimitCompileThreads(unsigned requested)
++	{
++#if defined(__ANDROID__)
++		const auto& cfg = GetConfig();
++		// helpers are only confined to the little cores in exclusive mode (see ApplyThreadTuningByName)
++		if (!cfg.limitCompileThreads || !cfg.bigCoreAffinity || !cfg.helperThreadDemotion)
++			return requested;
++		const auto& layout = GetCpuLayout();
++		if (!layout.valid || !layout.exclusive || layout.little.empty())
++			return requested;
++		return std::max(1u, std::min(requested, (unsigned)layout.little.size()));
++#else
++		return requested;
++#endif
++	}
+ }
+diff --git a/src/util/helpers/AndroidTweaks.h b/src/util/helpers/AndroidTweaks.h
+--- a/src/util/helpers/AndroidTweaks.h	2026-11-15 12:35:11.131043912 +0000
++++ b/src/util/helpers/AndroidTweaks.h	2026-11-15 12:35:11.132445659 +0000
+@@ -20,6 +20,14 @@
+ 		// Experimental text-based FP16 rewrite of generated GLSL (Adreno with FP16 support only).
+ 		// Shaders that fail to compile after the rewrite fall back to the original GLSL automatically.
+ 		bool fp16ShaderRewrite = false;
++		// Cap the pipeline compile thread pool at the number of "little" cores (asymmetric CPUs only, and only while
++		// helper threads are confined to those cores). Cemu starts up to 8 compile threads, which just oversubscribe
++		// the little cores on a phone and raise peak RAM use while shaders compile.
++		bool limitCompileThreads = true;
++		// Experimental (GPU): without VK_EXT_pipeline_robustness (Turnip) Cemu turns on robustBufferAccess for the WHOLE
++		// device, so every pipeline pays for bounds checking although only a few need it. 1 = leave it off.
++		// May be faster, but games that read out of bounds can then show garbage or crash the GPU driver.
++		bool skipDeviceRobustBufferAccess = false;
+ 	};
+ 
+ 	const Config& GetConfig();
+@@ -38,4 +46,7 @@
+ 	// Called from SetThreadName(): applies the right placement to well-known helper threads by name
+ 	// (compile threads, cache writers, PPC recompiler, ...). Unknown names are left alone.
+ 	void ApplyThreadTuningByName(const char* threadName);
++
++	// Returns how many pipeline compile threads to start (never more than 'requested', never less than 1).
++	unsigned LimitCompileThreads(unsigned requested);
+ }

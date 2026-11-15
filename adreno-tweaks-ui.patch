@@ -1,0 +1,557 @@
+diff --git a/src/android/app/src/main/cpp/CMakeLists.txt b/src/android/app/src/main/cpp/CMakeLists.txt
+index f4ddc11..a3c176f 100644
+--- a/src/android/app/src/main/cpp/CMakeLists.txt
++++ b/src/android/app/src/main/cpp/CMakeLists.txt
+@@ -7,6 +7,7 @@ add_library(CemuAndroid SHARED
+         JNIUtils.cpp
+         NativeAccount.cpp
+         NativeActiveSettings.cpp
++        NativeAdrenoTweaks.cpp
+         NativeEmulatedUSBDevices.cpp
+         NativeEmulation.cpp
+         NativeGameTitles.cpp
+diff --git a/src/android/app/src/main/cpp/NativeAdrenoTweaks.cpp b/src/android/app/src/main/cpp/NativeAdrenoTweaks.cpp
+new file mode 100644
+index 0000000..1165104
+--- /dev/null
++++ b/src/android/app/src/main/cpp/NativeAdrenoTweaks.cpp
+@@ -0,0 +1,26 @@
++#include "JNIUtils.h"
++#include "util/helpers/AndroidTweaks.h"
++
++extern "C" [[maybe_unused]] JNIEXPORT jboolean JNICALL
++Java_info_cemu_cemu_nativeinterface_NativeAdrenoTweaks_getSavedTweak(JNIEnv* env, [[maybe_unused]] jclass clazz, jstring key)
++{
++	return AndroidTweaks::GetSavedFlag(JNIUtils::FromJString(env, key).c_str());
++}
++
++extern "C" [[maybe_unused]] JNIEXPORT jboolean JNICALL
++Java_info_cemu_cemu_nativeinterface_NativeAdrenoTweaks_isTweakActive(JNIEnv* env, [[maybe_unused]] jclass clazz, jstring key)
++{
++	return AndroidTweaks::IsActiveFlag(JNIUtils::FromJString(env, key).c_str());
++}
++
++extern "C" [[maybe_unused]] JNIEXPORT void JNICALL
++Java_info_cemu_cemu_nativeinterface_NativeAdrenoTweaks_setTweak(JNIEnv* env, [[maybe_unused]] jclass clazz, jstring key, jboolean value)
++{
++	AndroidTweaks::SetSavedFlag(JNIUtils::FromJString(env, key).c_str(), value);
++}
++
++extern "C" [[maybe_unused]] JNIEXPORT jstring JNICALL
++Java_info_cemu_cemu_nativeinterface_NativeAdrenoTweaks_getCpuLayout(JNIEnv* env, [[maybe_unused]] jclass clazz)
++{
++	return JNIUtils::ToJString(env, AndroidTweaks::DescribeCpuLayout());
++}
+diff --git a/src/android/app/src/main/cpp/NativeSettings.cpp b/src/android/app/src/main/cpp/NativeSettings.cpp
+index 9ee663a..1eaeddd 100644
+--- a/src/android/app/src/main/cpp/NativeSettings.cpp
++++ b/src/android/app/src/main/cpp/NativeSettings.cpp
+@@ -207,6 +207,18 @@ Java_info_cemu_cemu_nativeinterface_NativeSettings_setAsyncShaderCompile([[maybe
+ 	GetConfig().async_compile = enabled;
+ }
+ 
++extern "C" [[maybe_unused]] JNIEXPORT jboolean JNICALL
++Java_info_cemu_cemu_nativeinterface_NativeSettings_getGX2DrawDoneSync([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz)
++{
++	return GetConfig().gx2drawdone_sync;
++}
++
++extern "C" [[maybe_unused]] JNIEXPORT void JNICALL
++Java_info_cemu_cemu_nativeinterface_NativeSettings_setGX2DrawDoneSync([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz, jboolean enabled)
++{
++	GetConfig().gx2drawdone_sync = enabled;
++}
++
+ extern "C" [[maybe_unused]] JNIEXPORT jint JNICALL
+ Java_info_cemu_cemu_nativeinterface_NativeSettings_getVsyncMode([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz)
+ {
+diff --git a/src/android/app/src/main/java/info/cemu/cemu/nativeinterface/NativeAdrenoTweaks.kt b/src/android/app/src/main/java/info/cemu/cemu/nativeinterface/NativeAdrenoTweaks.kt
+new file mode 100644
+index 0000000..bac237b
+--- /dev/null
++++ b/src/android/app/src/main/java/info/cemu/cemu/nativeinterface/NativeAdrenoTweaks.kt
+@@ -0,0 +1,26 @@
++package info.cemu.cemu.nativeinterface
++
++object NativeAdrenoTweaks {
++    // keys of adreno_tweaks.txt
++    const val BIG_CORE_AFFINITY = "bigCoreAffinity"
++    const val HELPER_THREAD_DEMOTION = "helperThreadDemotion"
++    const val LIMIT_COMPILE_THREADS = "limitCompileThreads"
++    const val BY_REGION_BARRIERS = "byRegionBarriers"
++    const val FP16_SHADER_REWRITE = "fp16ShaderRewrite"
++    const val SKIP_DEVICE_ROBUST_BUFFER_ACCESS = "skipDeviceRobustBufferAccess"
++
++    /** Value stored in adreno_tweaks.txt (what the next app start will use). */
++    @JvmStatic
++    external fun getSavedTweak(key: String): Boolean
++
++    /** Value the running process is using. Differs from the saved value until the app is restarted. */
++    @JvmStatic
++    external fun isTweakActive(key: String): Boolean
++
++    /** Saves the value to adreno_tweaks.txt immediately. */
++    @JvmStatic
++    external fun setTweak(key: String, value: Boolean)
++
++    @JvmStatic
++    external fun getCpuLayout(): String
++}
+diff --git a/src/android/app/src/main/java/info/cemu/cemu/nativeinterface/NativeSettings.kt b/src/android/app/src/main/java/info/cemu/cemu/nativeinterface/NativeSettings.kt
+index 5b86c34..d795107 100644
+--- a/src/android/app/src/main/java/info/cemu/cemu/nativeinterface/NativeSettings.kt
++++ b/src/android/app/src/main/java/info/cemu/cemu/nativeinterface/NativeSettings.kt
+@@ -19,6 +19,12 @@ object NativeSettings {
+     @JvmStatic
+     external fun setAsyncShaderCompile(value: Boolean)
+ 
++    @JvmStatic
++    external fun getGX2DrawDoneSync(): Boolean
++
++    @JvmStatic
++    external fun setGX2DrawDoneSync(value: Boolean)
++
+     object VSyncMode {
+         const val OFF: Int = 0
+         const val DOUBLE_BUFFERING: Int = 1
+diff --git a/src/android/app/src/main/java/info/cemu/cemu/settings/SettingsHomeScreen.kt b/src/android/app/src/main/java/info/cemu/cemu/settings/SettingsHomeScreen.kt
+index 82d9dab..c67c938 100644
+--- a/src/android/app/src/main/java/info/cemu/cemu/settings/SettingsHomeScreen.kt
++++ b/src/android/app/src/main/java/info/cemu/cemu/settings/SettingsHomeScreen.kt
+@@ -11,6 +11,7 @@ fun SettingsHomeScreen(
+     goToGeneralSettings: () -> Unit,
+     goToInputSettings: () -> Unit,
+     goToGraphicsSettings: () -> Unit,
++    goToAdrenoTweaksSettings: () -> Unit,
+     goToEmulatedUSBDevicesSettings: () -> Unit,
+     goToAudioSettings: () -> Unit,
+     goToAccountSettings: () -> Unit,
+@@ -33,6 +34,10 @@ fun SettingsHomeScreen(
+             label = tr("Graphics settings"),
+             onClick = dropUnlessResumed(block = goToGraphicsSettings)
+         )
++        Button(
++            label = tr("Adreno tweaks"),
++            onClick = dropUnlessResumed(block = goToAdrenoTweaksSettings)
++        )
+         Button(
+             label = tr("Audio settings"),
+             onClick = dropUnlessResumed(block = goToAudioSettings)
+diff --git a/src/android/app/src/main/java/info/cemu/cemu/settings/SettingsNavigation.kt b/src/android/app/src/main/java/info/cemu/cemu/settings/SettingsNavigation.kt
+index 8ae1e31..ba680c3 100644
+--- a/src/android/app/src/main/java/info/cemu/cemu/settings/SettingsNavigation.kt
++++ b/src/android/app/src/main/java/info/cemu/cemu/settings/SettingsNavigation.kt
+@@ -6,6 +6,7 @@ import androidx.navigation.compose.composable
+ import androidx.navigation.compose.navigation
+ import androidx.navigation.toRoute
+ import info.cemu.cemu.settings.account.AccountSettingsScreen
++import info.cemu.cemu.settings.adrenotweaks.AdrenoTweaksScreen
+ import info.cemu.cemu.settings.audio.AudioSettingsScreen
+ import info.cemu.cemu.settings.customdrivers.CustomDriversScreen
+ import info.cemu.cemu.settings.emulatedusbdevices.EmulatedUSBDevicesSettingsScreen
+@@ -42,6 +43,9 @@ private object SettingsRoutes {
+     @Serializable
+     object GraphicsSettingsScreenRoute
+ 
++    @Serializable
++    object AdrenoTweaksScreenRoute
++
+     @Serializable
+     object CustomDriversScreenRoute
+ 
+@@ -81,6 +85,7 @@ fun NavGraphBuilder.settingsNavigation(navController: NavHostController) {
+                 goToGeneralSettings = { navController.navigate(SettingsRoutes.GeneralSettings) },
+                 goToInputSettings = { navController.navigate(SettingsRoutes.InputSettingsRoute) },
+                 goToGraphicsSettings = { navController.navigate(SettingsRoutes.GraphicsSettingsScreenRoute) },
++                goToAdrenoTweaksSettings = { navController.navigate(SettingsRoutes.AdrenoTweaksScreenRoute) },
+                 goToAudioSettings = { navController.navigate(SettingsRoutes.AudioSettingsScreenRoute) },
+                 goToOverlaySettings = { navController.navigate(SettingsRoutes.OverlaySettingsScreenRoute) },
+                 goToAccountSettings = { navController.navigate(SettingsRoutes.AccountSettingsScreenRoute) },
+@@ -100,6 +105,11 @@ fun NavGraphBuilder.settingsNavigation(navController: NavHostController) {
+                 }
+             )
+         }
++        composable<SettingsRoutes.AdrenoTweaksScreenRoute> {
++            AdrenoTweaksScreen(
++                navigateBack = { navController.popBackStack() },
++            )
++        }
+         composable<SettingsRoutes.CustomDriversScreenRoute> {
+             CustomDriversScreen(
+                 navigateBack = { navController.popBackStack() },
+diff --git a/src/android/app/src/main/java/info/cemu/cemu/settings/adrenotweaks/AdrenoTweaksScreen.kt b/src/android/app/src/main/java/info/cemu/cemu/settings/adrenotweaks/AdrenoTweaksScreen.kt
+new file mode 100644
+index 0000000..52152d7
+--- /dev/null
++++ b/src/android/app/src/main/java/info/cemu/cemu/settings/adrenotweaks/AdrenoTweaksScreen.kt
+@@ -0,0 +1,115 @@
++package info.cemu.cemu.settings.adrenotweaks
++
++import androidx.compose.foundation.layout.padding
++import androidx.compose.material3.Text
++import androidx.compose.runtime.Composable
++import androidx.compose.runtime.MutableState
++import androidx.compose.runtime.mutableStateOf
++import androidx.compose.runtime.remember
++import androidx.compose.runtime.saveable.rememberSaveable
++import androidx.compose.ui.Modifier
++import androidx.compose.ui.unit.dp
++import androidx.compose.ui.unit.sp
++import info.cemu.cemu.common.ui.components.Header
++import info.cemu.cemu.common.ui.components.ScreenContent
++import info.cemu.cemu.common.ui.components.Toggle
++import info.cemu.cemu.common.ui.localization.tr
++import info.cemu.cemu.nativeinterface.NativeAdrenoTweaks
++import info.cemu.cemu.nativeinterface.NativeSettings
++
++@Composable
++private fun rememberTweakState(key: String): MutableState<Boolean> =
++    rememberSaveable { mutableStateOf(NativeAdrenoTweaks.getSavedTweak(key)) }
++
++@Composable
++private fun TweakToggle(
++    key: String,
++    label: String,
++    description: String,
++    state: MutableState<Boolean>,
++    enabled: Boolean = true,
++) {
++    // the tweaks are read once when the app process starts, so a changed switch needs a restart
++    val activeValue = remember(key) { NativeAdrenoTweaks.isTweakActive(key) }
++    val restartRequired = state.value != activeValue
++    Toggle(
++        label = label,
++        checked = state.value,
++        onCheckedChanged = {
++            state.value = it
++            NativeAdrenoTweaks.setTweak(key, it)
++        },
++        description = if (restartRequired) "$description\n\n${tr("Restart the app to apply this change.")}" else description,
++        enabled = enabled,
++    )
++}
++
++@Composable
++fun AdrenoTweaksScreen(navigateBack: () -> Unit) {
++    val cpuLayout = remember { NativeAdrenoTweaks.getCpuLayout() }
++    val bigCoreAffinity = rememberTweakState(NativeAdrenoTweaks.BIG_CORE_AFFINITY)
++    val helperThreadDemotion = rememberTweakState(NativeAdrenoTweaks.HELPER_THREAD_DEMOTION)
++    val limitCompileThreads = rememberTweakState(NativeAdrenoTweaks.LIMIT_COMPILE_THREADS)
++    val skipRobustBufferAccess = rememberTweakState(NativeAdrenoTweaks.SKIP_DEVICE_ROBUST_BUFFER_ACCESS)
++    val byRegionBarriers = rememberTweakState(NativeAdrenoTweaks.BY_REGION_BARRIERS)
++    val fp16ShaderRewrite = rememberTweakState(NativeAdrenoTweaks.FP16_SHADER_REWRITE)
++
++    ScreenContent(
++        appBarText = tr("Adreno tweaks"),
++        navigateBack = navigateBack,
++    ) {
++        Text(
++            text = tr("Detected CPU layout") + ": " + cpuLayout,
++            fontSize = 14.sp,
++            modifier = Modifier.padding(8.dp),
++        )
++
++        Header(tr("CPU"))
++        TweakToggle(
++            key = NativeAdrenoTweaks.BIG_CORE_AFFINITY,
++            label = tr("Big core thread placement"),
++            description = tr("Runs the GPU thread on the fastest core and each emulated PPC core on its own big core. Does nothing on CPUs without big and little cores."),
++            state = bigCoreAffinity,
++        )
++        TweakToggle(
++            key = NativeAdrenoTweaks.HELPER_THREAD_DEMOTION,
++            label = tr("Keep helper threads off big cores"),
++            description = tr("Shader compile, cache and file helper threads run on the little cores at lower priority so they cannot steal time from emulation. Needs big core thread placement."),
++            state = helperThreadDemotion,
++            enabled = bigCoreAffinity.value,
++        )
++        TweakToggle(
++            key = NativeAdrenoTweaks.LIMIT_COMPILE_THREADS,
++            label = tr("Limit shader compile threads"),
++            description = tr("Uses at most one compile thread per little core instead of up to 8. Less thrashing and lower peak RAM while shaders compile. Needs the two options above."),
++            state = limitCompileThreads,
++            enabled = bigCoreAffinity.value && helperThreadDemotion.value,
++        )
++
++        Header(tr("GPU"))
++        Toggle(
++            label = tr("Full sync at GX2DrawDone"),
++            description = tr("When a game asks for synchronization, the emulated CPU waits for the GPU to finish all work. More accurate, but it leaves the CPU cores idle while the GPU works. Turning it off can raise performance but may cause flickering or glitches. Applies the next time a game starts."),
++            initialCheckedState = NativeSettings::getGX2DrawDoneSync,
++            onCheckedChanged = NativeSettings::setGX2DrawDoneSync,
++        )
++        TweakToggle(
++            key = NativeAdrenoTweaks.SKIP_DEVICE_ROBUST_BUFFER_ACCESS,
++            label = tr("Skip device-wide robust buffer access (experimental)"),
++            description = tr("Without VK_EXT_pipeline_robustness (Turnip) Cemu checks buffer bounds in every pipeline. Turning this on removes those checks, which may be faster, but games that read out of bounds can show garbage or crash the GPU driver."),
++            state = skipRobustBufferAccess,
++        )
++        TweakToggle(
++            key = NativeAdrenoTweaks.BY_REGION_BARRIERS,
++            label = tr("By-region barriers (experimental)"),
++            description = tr("Adds the by-region flag to barriers between render passes. May be a no-op on some drivers."),
++            state = byRegionBarriers,
++        )
++        TweakToggle(
++            key = NativeAdrenoTweaks.FP16_SHADER_REWRITE,
++            label = tr("FP16 shader rewrite (experimental)"),
++            description = tr("Rewrites generated shaders to use 16-bit floats on Adreno GPUs that support it. Shaders that fail to compile fall back to the original. Clear the shader caches after changing this."),
++            state = fp16ShaderRewrite,
++        )
++    }
++}
+diff --git a/src/util/helpers/AndroidTweaks.cpp b/src/util/helpers/AndroidTweaks.cpp
+index 2a68ffe..8800d56 100644
+--- a/src/util/helpers/AndroidTweaks.cpp
++++ b/src/util/helpers/AndroidTweaks.cpp
+@@ -8,6 +8,7 @@
+ #include <string>
+ #include <vector>
+ #include <algorithm>
++#include <mutex>
+ 
+ #if defined(__ANDROID__)
+ #include <sched.h>
+@@ -27,62 +28,81 @@ namespace AndroidTweaks
+ 		return s.substr(b, e - b + 1);
+ 	}
+ 
+-	static const char* kDefaultFile =
+-		"# Android/Adreno performance tweaks (1 = on, 0 = off)\n"
+-		"# Place Latte / PPC threads on dedicated big cores (topology aware)\n"
+-		"bigCoreAffinity=1\n"
+-		"# Keep compile / cache helper threads off those cores and lower their priority\n"
+-		"helperThreadDemotion=1\n"
+-		"# Experimental: by-region barriers between render passes (Adreno only, may be a no-op)\n"
+-		"byRegionBarriers=0\n"
+-		"# Experimental: FP16 rewrite of generated GLSL (Adreno only, falls back per shader on compile errors).\n"
+-		"# Clear the shader caches after changing this.\n"
+-		"fp16ShaderRewrite=0\n"
+-		"# Cap shader compile threads at the number of little cores (less oversubscription, less peak RAM)\n"
+-		"limitCompileThreads=1\n"
+-		"# Experimental: leave device-wide robustBufferAccess off when VK_EXT_pipeline_robustness is missing.\n"
+-		"# Can be faster on Adreno/Turnip, but may cause garbage or GPU hangs in games that read out of bounds.\n"
+-		"skipDeviceRobustBufferAccess=0\n";
++	// One entry per switch. Drives the config file (read/write) and the in-app "Adreno tweaks" screen.
++	struct FlagDesc
++	{
++		const char* key;
++		bool Config::* member;
++		const char* comment;
++	};
++
++	static const FlagDesc kFlags[] = {
++		{"bigCoreAffinity", &Config::bigCoreAffinity, "Place Latte / PPC threads on dedicated big cores (topology aware)"},
++		{"helperThreadDemotion", &Config::helperThreadDemotion, "Keep compile / cache helper threads off those cores and lower their priority"},
++		{"limitCompileThreads", &Config::limitCompileThreads, "Cap shader compile threads at the number of little cores (less oversubscription, less peak RAM)"},
++		{"byRegionBarriers", &Config::byRegionBarriers, "Experimental: by-region barriers between render passes (Adreno only, may be a no-op)"},
++		{"fp16ShaderRewrite", &Config::fp16ShaderRewrite, "Experimental: FP16 rewrite of generated GLSL (Adreno only, falls back per shader on compile errors). Clear the shader caches after changing this."},
++		{"skipDeviceRobustBufferAccess", &Config::skipDeviceRobustBufferAccess, "Experimental: leave device-wide robustBufferAccess off when VK_EXT_pipeline_robustness is missing. Can be faster on Adreno/Turnip, but may cause garbage or GPU hangs in games that read out of bounds."},
++	};
++
++	static const FlagDesc* FindFlag(const char* key)
++	{
++		if (!key)
++			return nullptr;
++		for (const FlagDesc& f : kFlags)
++			if (std::string(f.key) == key)
++				return &f;
++		return nullptr;
++	}
++
++	static std::filesystem::path ConfigFilePath()
++	{
++		return ActiveSettings::GetConfigPath("adreno_tweaks.txt");
++	}
++
++	static void WriteConfig(std::ostream& out, const Config& cfg)
++	{
++		out << "# Android/Adreno performance tweaks (1 = on, 0 = off)\n";
++		out << "# Changes made in the app (Settings > Adreno tweaks) are written here; they apply after an app restart.\n";
++		for (const FlagDesc& f : kFlags)
++			out << "# " << f.comment << "\n" << f.key << "=" << (cfg.*(f.member) ? 1 : 0) << "\n";
++	}
++
++	// Returns false if the file could not be opened (cfg keeps its defaults in that case).
++	static bool ReadConfigFile(const std::filesystem::path& path, Config& cfg)
++	{
++		std::ifstream in(path);
++		if (!in.is_open())
++			return false;
++		std::string line;
++		while (std::getline(in, line))
++		{
++			size_t hash = line.find('#');
++			if (hash != std::string::npos)
++				line.erase(hash);
++			size_t eq = line.find('=');
++			if (eq == std::string::npos)
++				continue;
++			std::string key = Trim(line.substr(0, eq));
++			std::string val = Trim(line.substr(eq + 1));
++			bool on = (val == "1" || val == "true" || val == "on");
++			if (const FlagDesc* f = FindFlag(key.c_str()))
++				cfg.*(f->member) = on;
++		}
++		return true;
++	}
+ 
+ 	static Config LoadConfig()
+ 	{
+ 		Config cfg;
+-		std::filesystem::path path;
+ 		try
+ 		{
+-			path = ActiveSettings::GetConfigPath("adreno_tweaks.txt");
+-			std::ifstream in(path);
+-			if (!in.is_open())
++			const std::filesystem::path path = ConfigFilePath();
++			if (!ReadConfigFile(path, cfg))
+ 			{
+ 				std::ofstream out(path);
+ 				if (out.is_open())
+-					out << kDefaultFile;
+-				return cfg;
+-			}
+-			std::string line;
+-			while (std::getline(in, line))
+-			{
+-				size_t hash = line.find('#');
+-				if (hash != std::string::npos)
+-					line.erase(hash);
+-				size_t eq = line.find('=');
+-				if (eq == std::string::npos)
+-					continue;
+-				std::string key = Trim(line.substr(0, eq));
+-				std::string val = Trim(line.substr(eq + 1));
+-				bool on = (val == "1" || val == "true" || val == "on");
+-				if (key == "bigCoreAffinity")
+-					cfg.bigCoreAffinity = on;
+-				else if (key == "helperThreadDemotion")
+-					cfg.helperThreadDemotion = on;
+-				else if (key == "byRegionBarriers")
+-					cfg.byRegionBarriers = on;
+-				else if (key == "fp16ShaderRewrite")
+-					cfg.fp16ShaderRewrite = on;
+-				else if (key == "limitCompileThreads")
+-					cfg.limitCompileThreads = on;
+-				else if (key == "skipDeviceRobustBufferAccess")
+-					cfg.skipDeviceRobustBufferAccess = on;
++					WriteConfig(out, cfg);
+ 			}
+ 		}
+ 		catch (...)
+@@ -98,6 +118,69 @@ namespace AndroidTweaks
+ 		return s_config;
+ 	}
+ 
++	// --- settings screen support ------------------------------------------------------------------------------
++	// GetConfig() is read once per process, so the screen edits a separate "saved" copy that is written to the
++	// config file on every change. IsActiveFlag() tells the screen what the running process is using.
++
++	static std::mutex s_savedMutex;
++	static Config s_saved;
++	static bool s_savedLoaded = false;
++
++	static Config& SavedConfigLocked()
++	{
++		if (!s_savedLoaded)
++		{
++			try
++			{
++				ReadConfigFile(ConfigFilePath(), s_saved);
++			}
++			catch (...)
++			{
++			}
++			s_savedLoaded = true;
++		}
++		return s_saved;
++	}
++
++	bool GetSavedFlag(const char* key)
++	{
++		const FlagDesc* f = FindFlag(key);
++		if (!f)
++			return false;
++		std::lock_guard lock(s_savedMutex);
++		return SavedConfigLocked().*(f->member);
++	}
++
++	bool IsActiveFlag(const char* key)
++	{
++		const FlagDesc* f = FindFlag(key);
++		if (!f)
++			return false;
++		return GetConfig().*(f->member);
++	}
++
++	bool SetSavedFlag(const char* key, bool value)
++	{
++		const FlagDesc* f = FindFlag(key);
++		if (!f)
++			return false;
++		std::lock_guard lock(s_savedMutex);
++		Config& cfg = SavedConfigLocked();
++		cfg.*(f->member) = value;
++		try
++		{
++			std::ofstream out(ConfigFilePath(), std::ios::trunc);
++			if (!out.is_open())
++				return false;
++			WriteConfig(out, cfg);
++			return true;
++		}
++		catch (...)
++		{
++			return false;
++		}
++	}
++
+ #if defined(__ANDROID__)
+ 	// --- CPU topology detection -------------------------------------------------------------------------------
+ 
+@@ -254,6 +337,15 @@ namespace AndroidTweaks
+ 		return std::max(1u, std::min(requested, (unsigned)layout.little.size()));
+ #else
+ 		return requested;
++#endif
++	}
++
++	std::string DescribeCpuLayout()
++	{
++#if defined(__ANDROID__)
++		return Layout::Describe(GetCpuLayout());
++#else
++		return "not an Android device";
+ #endif
+ 	}
+ }
+diff --git a/src/util/helpers/AndroidTweaks.h b/src/util/helpers/AndroidTweaks.h
+index 66d3dd8..3876198 100644
+--- a/src/util/helpers/AndroidTweaks.h
++++ b/src/util/helpers/AndroidTweaks.h
+@@ -1,5 +1,7 @@
+ #pragma once
+ 
++#include <string>
++
+ // Optional Android/Adreno performance tweaks.
+ // Settings are read once from <config dir>/adreno_tweaks.txt (created with defaults on first use).
+ // File format: one "key=0|1" per line, '#' starts a comment.
+@@ -49,4 +51,15 @@ namespace AndroidTweaks
+ 
+ 	// Returns how many pipeline compile threads to start (never more than 'requested', never less than 1).
+ 	unsigned LimitCompileThreads(unsigned requested);
++
++	// --- in-app settings screen (Settings > Adreno tweaks) ---------------------------------------------------
++	// 'key' is the config file key, e.g. "bigCoreAffinity". Unknown keys read as false and are never saved.
++	// GetConfig() is read once per process: SetSavedFlag() writes adreno_tweaks.txt immediately, the new value is
++	// used after the app is restarted. IsActiveFlag() is the value the running process actually uses.
++	bool GetSavedFlag(const char* key);
++	bool IsActiveFlag(const char* key);
++	bool SetSavedFlag(const char* key, bool value);
++
++	// One line describing the detected CPU layout, e.g. "big(strongest first)=[7,6,5,4] little=[0,1,2,3] mode=exclusive"
++	std::string DescribeCpuLayout();
+ }
