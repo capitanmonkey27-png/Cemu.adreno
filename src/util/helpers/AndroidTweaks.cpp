@@ -50,6 +50,9 @@ namespace AndroidTweaks
 		{"byRegionBarriers", &Config::byRegionBarriers, "Experimental: by-region barriers between render passes (Adreno only, may be a no-op)"},
 		{"fp16ShaderRewrite", &Config::fp16ShaderRewrite, "Experimental: FP16 rewrite of generated GLSL (Adreno only, falls back per shader on compile errors). Clear the shader caches after changing this."},
 		{"threadCpuLog", &Config::threadCpuLog, "Diagnostic: every 5 s log the busiest threads and the core they ran on (first ~10 minutes of a game)"},
+		{"tuForceSysmem", &Config::tuForceSysmem, "Turnip only: TU_DEBUG=sysmem, always render directly to memory instead of tiled GMEM rendering"},
+		{"tuForceGmem", &Config::tuForceGmem, "Turnip only: TU_DEBUG=gmem, always use tiled GMEM rendering (ignored when tuForceSysmem=1)"},
+		{"tuNoUbwc", &Config::tuNoUbwc, "Turnip only: TU_DEBUG=noubwc, turn off UBWC compression"},
 		{"skipDeviceRobustBufferAccess", &Config::skipDeviceRobustBufferAccess, "Experimental: leave device-wide robustBufferAccess off when VK_EXT_pipeline_robustness is missing. Can be faster on Adreno/Turnip, but may cause garbage or GPU hangs in games that read out of bounds."},
 	};
 
@@ -518,6 +521,36 @@ namespace AndroidTweaks
 		return Layout::Describe(GetCpuLayout());
 #else
 		return "not an Android device";
+#endif
+	}
+
+	void ApplyGpuDriverEnv()
+	{
+#if defined(__ANDROID__)
+		// The driver reads TU_DEBUG when its instance is created, so this has to run before the library is loaded.
+		// Build the value from the TU_DEBUG the process started with, so calling this again never stacks flags.
+		static const std::string s_originalValue = []() {
+			const char* v = std::getenv("TU_DEBUG");
+			return std::string(v ? v : "");
+		}();
+		const Config& cfg = GetConfig();
+		std::string flags;
+		auto add = [&flags](const char* f) {
+			if (!flags.empty())
+				flags += ",";
+			flags += f;
+		};
+		if (cfg.tuForceSysmem)
+			add("sysmem");
+		else if (cfg.tuForceGmem)
+			add("gmem");
+		if (cfg.tuNoUbwc)
+			add("noubwc");
+		if (flags.empty())
+			return;
+		const std::string value = s_originalValue.empty() ? flags : s_originalValue + "," + flags;
+		setenv("TU_DEBUG", value.c_str(), 1);
+		cemuLog_log(LogType::Force, "AndroidTweaks: TU_DEBUG={}", value);
 #endif
 	}
 }

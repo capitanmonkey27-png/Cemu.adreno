@@ -34,6 +34,11 @@ namespace AndroidTweaks
 		// for the first ~10 minutes after a game starts. Shows what actually loads each core.
 		// DEBUG BUILD: on by default so a log is produced even if the saved setting is not picked up.
 		bool threadCpuLog = true;
+		// Turnip (custom Mesa driver) rendering-mode flags, handed to the driver through TU_DEBUG just before it is loaded.
+		// They have no effect on the stock Qualcomm driver.
+		bool tuForceSysmem = false; // TU_DEBUG=sysmem: always render directly to memory (no tiled GMEM rendering)
+		bool tuForceGmem = false;   // TU_DEBUG=gmem: always use tiled GMEM rendering (ignored when tuForceSysmem is on)
+		bool tuNoUbwc = false;      // TU_DEBUG=noubwc: turn off UBWC framebuffer/texture compression
 	};
 
 	const Config& GetConfig();
@@ -69,4 +74,7 @@ namespace AndroidTweaks
 
 	// Multi-line text for the settings screen: config file path/size and the active and saved value of every switch.
 	std::string DescribeTweaksState();
+
+	// Sets TU_DEBUG from the Turnip switches above. Call right before the Vulkan driver library is loaded.
+	void ApplyGpuDriverEnv();
 }

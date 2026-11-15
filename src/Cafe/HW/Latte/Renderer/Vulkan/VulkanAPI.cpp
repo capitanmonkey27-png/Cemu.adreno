@@ -158,6 +158,7 @@ constexpr auto CUSTOM_DRIVER_LIB_NAME = "custom_vulkan.so";
 #include <rapidjson/istreamwrapper.h>
 #include "config/ActiveSettings.h"
 #include "Cafe/GameProfile/GameProfile.h"
+#include "util/helpers/AndroidTweaks.h"
 
 std::string get_custom_driver_lib_name(const fs::path& driver_path)
 {
@@ -212,6 +213,8 @@ void* load_custom_driver()
 
 	std::error_code ec;
 	fs::copy(fs::path(driver_path.value()) / driver_name, ActiveSettings::GetInternalPath(CUSTOM_DRIVER_LIB_NAME), fs::copy_options::overwrite_existing, ec);
+
+	AndroidTweaks::ApplyGpuDriverEnv(); // TU_DEBUG for the Turnip driver, must be set before the library is loaded
 
 	void* vulkan_so = adrenotools_open_libvulkan(
 		RTLD_NOW | RTLD_LOCAL,

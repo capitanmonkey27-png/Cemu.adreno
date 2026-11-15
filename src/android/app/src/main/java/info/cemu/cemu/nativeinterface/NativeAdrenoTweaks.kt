@@ -9,6 +9,9 @@ object NativeAdrenoTweaks {
     const val FP16_SHADER_REWRITE = "fp16ShaderRewrite"
     const val SKIP_DEVICE_ROBUST_BUFFER_ACCESS = "skipDeviceRobustBufferAccess"
     const val THREAD_CPU_LOG = "threadCpuLog"
+    const val TU_FORCE_SYSMEM = "tuForceSysmem"
+    const val TU_FORCE_GMEM = "tuForceGmem"
+    const val TU_NO_UBWC = "tuNoUbwc"
 
     /** Value stored in adreno_tweaks.txt (what the next app start will use). */
     @JvmStatic

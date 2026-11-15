@@ -54,6 +54,9 @@ fun AdrenoTweaksScreen(navigateBack: () -> Unit) {
     val byRegionBarriers = rememberTweakState(NativeAdrenoTweaks.BY_REGION_BARRIERS)
     val fp16ShaderRewrite = rememberTweakState(NativeAdrenoTweaks.FP16_SHADER_REWRITE)
     val threadCpuLog = rememberTweakState(NativeAdrenoTweaks.THREAD_CPU_LOG)
+    val tuForceSysmem = rememberTweakState(NativeAdrenoTweaks.TU_FORCE_SYSMEM)
+    val tuForceGmem = rememberTweakState(NativeAdrenoTweaks.TU_FORCE_GMEM)
+    val tuNoUbwc = rememberTweakState(NativeAdrenoTweaks.TU_NO_UBWC)
 
     ScreenContent(
         appBarText = tr("Adreno tweaks"),
@@ -117,6 +120,27 @@ fun AdrenoTweaksScreen(navigateBack: () -> Unit) {
             label = tr("FP16 shader rewrite (experimental)"),
             description = tr("Rewrites generated shaders to use 16-bit floats on Adreno GPUs that support it. Shaders that fail to compile fall back to the original. Clear the shader caches after changing this."),
             state = fp16ShaderRewrite,
+        )
+
+        Header(tr("Turnip driver (custom driver only)"))
+        TweakToggle(
+            key = NativeAdrenoTweaks.TU_FORCE_SYSMEM,
+            label = tr("Force direct rendering (sysmem)"),
+            description = tr("Makes the Turnip driver render straight to memory instead of in tiles. Cemu ends render passes very often, which can make tiled rendering expensive. Experimental: may be faster or slower."),
+            state = tuForceSysmem,
+        )
+        TweakToggle(
+            key = NativeAdrenoTweaks.TU_FORCE_GMEM,
+            label = tr("Force tiled rendering (GMEM)"),
+            description = tr("Makes the Turnip driver always render in tiles. The opposite experiment to direct rendering. Ignored while direct rendering is on."),
+            state = tuForceGmem,
+            enabled = !tuForceSysmem.value,
+        )
+        TweakToggle(
+            key = NativeAdrenoTweaks.TU_NO_UBWC,
+            label = tr("Disable UBWC compression"),
+            description = tr("Turns off framebuffer and texture compression in the Turnip driver. Uses more memory bandwidth, but can avoid compression overhead. Experimental."),
+            state = tuNoUbwc,
         )
 
         Header(tr("Diagnostics"))
