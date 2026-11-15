@@ -130,6 +130,23 @@ namespace AndroidTweaks
 	// GetConfig() is read once per process, so the screen edits a separate "saved" copy that is written to the
 	// config file on every change. IsActiveFlag() tells the screen what the running process is using.
 
+	static std::string FlagsToString(const Config& cfg)
+	{
+		std::string s;
+		for (const FlagDesc& f : kFlags)
+			s += std::string(s.empty() ? "" : " ") + f.key + "=" + (cfg.*(f.member) ? "1" : "0");
+		return s;
+	}
+
+	static std::string DescribeFile()
+	{
+		std::error_code ec;
+		const std::filesystem::path path = ConfigFilePath();
+		const bool exists = std::filesystem::exists(path, ec);
+		const auto size = exists ? std::filesystem::file_size(path, ec) : 0;
+		return path.string() + (exists ? " (exists, " + std::to_string((unsigned long long)size) + " bytes)" : " (MISSING)");
+	}
+
 	static std::mutex s_savedMutex;
 	static Config s_saved;
 	static bool s_savedLoaded = false;
@@ -402,6 +419,15 @@ namespace AndroidTweaks
 
 	// Started from the Latte thread BEFORE it pins itself, so the census thread keeps the full affinity mask
 	// and never competes with the Latte thread for its core. It is not named (no SetThreadName) on purpose.
+	// One line in the log with the values this process really uses, written when the Latte thread starts.
+	static void LogActiveConfigOnce()
+	{
+		static std::once_flag s_once;
+		std::call_once(s_once, []() {
+			cemuLog_log(LogType::Force, "AndroidTweaks: config file={} active: {}", DescribeFile(), FlagsToString(GetConfig()));
+		});
+	}
+
 	static void StartCpuCensus()
 	{
 		static std::once_flag s_once;
@@ -412,6 +438,8 @@ namespace AndroidTweaks
 	void ApplyThreadTuning(ThreadRole role, int emuCoreIndex, int emuThreadCount)
 	{
 #if defined(__ANDROID__)
+		if (role == ThreadRole::Gpu)
+			LogActiveConfigOnce();
 		if (role == ThreadRole::Gpu && GetConfig().threadCpuLog)
 			StartCpuCensus();
 		if (!GetConfig().bigCoreAffinity)
@@ -476,6 +504,12 @@ namespace AndroidTweaks
 #else
 		return requested;
 #endif
+	}
+
+	std::string DescribeTweaksState()
+	{
+		std::lock_guard lock(s_savedMutex);
+		return "file: " + DescribeFile() + "\nactive: " + FlagsToString(GetConfig()) + "\nsaved: " + FlagsToString(SavedConfigLocked());
 	}
 
 	std::string DescribeCpuLayout()

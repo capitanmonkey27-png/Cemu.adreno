@@ -32,7 +32,8 @@ namespace AndroidTweaks
 		bool skipDeviceRobustBufferAccess = false;
 		// Diagnostic: every 5 s write the busiest threads (name, tid, % of one core, core last run on) to the log,
 		// for the first ~10 minutes after a game starts. Shows what actually loads each core.
-		bool threadCpuLog = false;
+		// DEBUG BUILD: on by default so a log is produced even if the saved setting is not picked up.
+		bool threadCpuLog = true;
 	};
 
 	const Config& GetConfig();
@@ -65,4 +66,7 @@ namespace AndroidTweaks
 
 	// One line describing the detected CPU layout, e.g. "big(strongest first)=[7,6,5,4] little=[0,1,2,3] mode=exclusive"
 	std::string DescribeCpuLayout();
+
+	// Multi-line text for the settings screen: config file path/size and the active and saved value of every switch.
+	std::string DescribeTweaksState();
 }
