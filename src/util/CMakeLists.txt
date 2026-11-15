@@ -27,6 +27,7 @@ add_library(CemuUtil
   helpers/helpers.h
   helpers/AndroidTweaks.cpp
   helpers/AndroidTweaks.h
+  helpers/AndroidTweaksLayout.h
   helpers/MapAdaptor.h
   helpers/MemoryPool.h
   helpers/ringbuffer.h

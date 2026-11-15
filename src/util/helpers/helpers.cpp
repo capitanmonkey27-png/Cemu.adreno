@@ -6,6 +6,7 @@
 #include <random>
 
 #include "config/ActiveSettings.h"
+#include "util/helpers/AndroidTweaks.h"
 
 #include <boost/random/uniform_int.hpp>
 
@@ -149,6 +150,7 @@ void SetThreadName(const char* name)
 	if(std::strlen(name) > 15)
 		cemuLog_log(LogType::Force, "Truncating thread name {} because it was longer than 15 characters", name);
 	pthread_setname_np(pthread_self(), std::string{name}.substr(0,15).c_str());
+	AndroidTweaks::ApplyThreadTuningByName(name);
 #endif
 }
 

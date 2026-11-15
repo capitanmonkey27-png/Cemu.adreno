@@ -1430,7 +1430,7 @@ namespace coreinit
 	void OSSchedulerCoreEmulationThread(void* _assignedCoreIndex)
 	{
 		SetThreadName(fmt::format("OSSched[core={}]", (uintptr_t)_assignedCoreIndex).c_str());
-		AndroidTweaks::ApplyThreadTuning(AndroidTweaks::ThreadRole::Emulation);
+		AndroidTweaks::ApplyThreadTuning(AndroidTweaks::ThreadRole::Emulation, (int)(uintptr_t)_assignedCoreIndex, g_isMulticoreMode ? 3 : 1);
 		t_assignedCoreIndex = (sint32)(uintptr_t)_assignedCoreIndex;
 
 		enableFlushDenormalsToZero();
