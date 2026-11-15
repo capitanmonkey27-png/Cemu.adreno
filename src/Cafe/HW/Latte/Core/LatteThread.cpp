@@ -116,7 +116,6 @@ void LatteThread_HandleOSScreen()
 int Latte_ThreadEntry()
 {
 	SetThreadName("LatteThread");
-	AndroidTweaks::ApplyThreadTuning(AndroidTweaks::ThreadRole::Gpu);
 	sint32 w,h;
 	WindowSystem::GetWindowPhysSize(w,h);
 
@@ -209,6 +208,9 @@ int Latte_ThreadEntry()
 		if (Latte_GetStopSignal())
 			LatteThread_Exit();
 	}
+	// pin only now: init is done and all helper threads (shader/pipeline compilers) were already created,
+	// so none of them can inherit the single-core affinity of this thread
+	AndroidTweaks::ApplyThreadTuning(AndroidTweaks::ThreadRole::Gpu);
 	LatteCP_ProcessRingbuffer();
 	cemu_assert_debug(false); // should never reach
 	return 0;
