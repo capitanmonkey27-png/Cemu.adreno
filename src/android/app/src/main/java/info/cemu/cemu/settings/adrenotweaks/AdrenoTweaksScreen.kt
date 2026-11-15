@@ -65,6 +65,12 @@ fun AdrenoTweaksScreen(navigateBack: () -> Unit) {
             modifier = Modifier.padding(8.dp),
         )
 
+        Text(
+            text = remember { NativeAdrenoTweaks.getTweaksState() },
+            fontSize = 11.sp,
+            modifier = Modifier.padding(horizontal = 8.dp),
+        )
+
         Header(tr("CPU"))
         TweakToggle(
             key = NativeAdrenoTweaks.BIG_CORE_AFFINITY,

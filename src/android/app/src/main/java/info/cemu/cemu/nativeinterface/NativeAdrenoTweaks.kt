@@ -24,4 +24,8 @@ object NativeAdrenoTweaks {
 
     @JvmStatic
     external fun getCpuLayout(): String
+
+    /** Config file path/size plus the active and saved value of every switch (multi-line, for debugging). */
+    @JvmStatic
+    external fun getTweaksState(): String
 }

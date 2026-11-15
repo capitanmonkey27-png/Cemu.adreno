@@ -24,3 +24,9 @@ Java_info_cemu_cemu_nativeinterface_NativeAdrenoTweaks_getCpuLayout(JNIEnv* env,
 {
 	return JNIUtils::ToJString(env, AndroidTweaks::DescribeCpuLayout());
 }
+
+extern "C" [[maybe_unused]] JNIEXPORT jstring JNICALL
+Java_info_cemu_cemu_nativeinterface_NativeAdrenoTweaks_getTweaksState(JNIEnv* env, [[maybe_unused]] jclass clazz)
+{
+	return JNIUtils::ToJString(env, AndroidTweaks::DescribeTweaksState());
+}

@@ -1,0 +1,132 @@
+diff --git a/src/android/app/src/main/cpp/NativeAdrenoTweaks.cpp b/src/android/app/src/main/cpp/NativeAdrenoTweaks.cpp
+index 1165104..af7c0ff 100644
+--- a/src/android/app/src/main/cpp/NativeAdrenoTweaks.cpp
++++ b/src/android/app/src/main/cpp/NativeAdrenoTweaks.cpp
+@@ -24,3 +24,9 @@ Java_info_cemu_cemu_nativeinterface_NativeAdrenoTweaks_getCpuLayout(JNIEnv* env,
+ {
+ 	return JNIUtils::ToJString(env, AndroidTweaks::DescribeCpuLayout());
+ }
++
++extern "C" [[maybe_unused]] JNIEXPORT jstring JNICALL
++Java_info_cemu_cemu_nativeinterface_NativeAdrenoTweaks_getTweaksState(JNIEnv* env, [[maybe_unused]] jclass clazz)
++{
++	return JNIUtils::ToJString(env, AndroidTweaks::DescribeTweaksState());
++}
+diff --git a/src/android/app/src/main/java/info/cemu/cemu/nativeinterface/NativeAdrenoTweaks.kt b/src/android/app/src/main/java/info/cemu/cemu/nativeinterface/NativeAdrenoTweaks.kt
+index 396550f..ec8043d 100644
+--- a/src/android/app/src/main/java/info/cemu/cemu/nativeinterface/NativeAdrenoTweaks.kt
++++ b/src/android/app/src/main/java/info/cemu/cemu/nativeinterface/NativeAdrenoTweaks.kt
+@@ -24,4 +24,8 @@ object NativeAdrenoTweaks {
+ 
+     @JvmStatic
+     external fun getCpuLayout(): String
++
++    /** Config file path/size plus the active and saved value of every switch (multi-line, for debugging). */
++    @JvmStatic
++    external fun getTweaksState(): String
+ }
+diff --git a/src/android/app/src/main/java/info/cemu/cemu/settings/adrenotweaks/AdrenoTweaksScreen.kt b/src/android/app/src/main/java/info/cemu/cemu/settings/adrenotweaks/AdrenoTweaksScreen.kt
+index 48adef6..15b03cc 100644
+--- a/src/android/app/src/main/java/info/cemu/cemu/settings/adrenotweaks/AdrenoTweaksScreen.kt
++++ b/src/android/app/src/main/java/info/cemu/cemu/settings/adrenotweaks/AdrenoTweaksScreen.kt
+@@ -65,6 +65,12 @@ fun AdrenoTweaksScreen(navigateBack: () -> Unit) {
+             modifier = Modifier.padding(8.dp),
+         )
+ 
++        Text(
++            text = remember { NativeAdrenoTweaks.getTweaksState() },
++            fontSize = 11.sp,
++            modifier = Modifier.padding(horizontal = 8.dp),
++        )
++
+         Header(tr("CPU"))
+         TweakToggle(
+             key = NativeAdrenoTweaks.BIG_CORE_AFFINITY,
+diff --git a/src/util/helpers/AndroidTweaks.cpp b/src/util/helpers/AndroidTweaks.cpp
+index 681af0c..afbb5cf 100644
+--- a/src/util/helpers/AndroidTweaks.cpp
++++ b/src/util/helpers/AndroidTweaks.cpp
+@@ -128,6 +128,23 @@ namespace AndroidTweaks
+ 	// GetConfig() is read once per process, so the screen edits a separate "saved" copy that is written to the
+ 	// config file on every change. IsActiveFlag() tells the screen what the running process is using.
+ 
++	static std::string FlagsToString(const Config& cfg)
++	{
++		std::string s;
++		for (const FlagDesc& f : kFlags)
++			s += std::string(s.empty() ? "" : " ") + f.key + "=" + (cfg.*(f.member) ? "1" : "0");
++		return s;
++	}
++
++	static std::string DescribeFile()
++	{
++		std::error_code ec;
++		const std::filesystem::path path = ConfigFilePath();
++		const bool exists = std::filesystem::exists(path, ec);
++		const auto size = exists ? std::filesystem::file_size(path, ec) : 0;
++		return path.string() + (exists ? " (exists, " + std::to_string((unsigned long long)size) + " bytes)" : " (MISSING)");
++	}
++
+ 	static std::mutex s_savedMutex;
+ 	static Config s_saved;
+ 	static bool s_savedLoaded = false;
+@@ -377,6 +394,15 @@ namespace AndroidTweaks
+ 
+ 	// Started from the Latte thread BEFORE it pins itself, so the census thread keeps the full affinity mask
+ 	// and never competes with the Latte thread for its core. It is not named (no SetThreadName) on purpose.
++	// One line in the log with the values this process really uses, written when the Latte thread starts.
++	static void LogActiveConfigOnce()
++	{
++		static std::once_flag s_once;
++		std::call_once(s_once, []() {
++			cemuLog_log(LogType::Force, "AndroidTweaks: config file={} active: {}", DescribeFile(), FlagsToString(GetConfig()));
++		});
++	}
++
+ 	static void StartCpuCensus()
+ 	{
+ 		static std::once_flag s_once;
+@@ -387,6 +413,8 @@ namespace AndroidTweaks
+ 	void ApplyThreadTuning(ThreadRole role, int emuCoreIndex, int emuThreadCount)
+ 	{
+ #if defined(__ANDROID__)
++		if (role == ThreadRole::Gpu)
++			LogActiveConfigOnce();
+ 		if (role == ThreadRole::Gpu && GetConfig().threadCpuLog)
+ 			StartCpuCensus();
+ 		if (!GetConfig().bigCoreAffinity)
+@@ -443,6 +471,12 @@ namespace AndroidTweaks
+ #endif
+ 	}
+ 
++	std::string DescribeTweaksState()
++	{
++		std::lock_guard lock(s_savedMutex);
++		return "file: " + DescribeFile() + "\nactive: " + FlagsToString(GetConfig()) + "\nsaved: " + FlagsToString(SavedConfigLocked());
++	}
++
+ 	std::string DescribeCpuLayout()
+ 	{
+ #if defined(__ANDROID__)
+diff --git a/src/util/helpers/AndroidTweaks.h b/src/util/helpers/AndroidTweaks.h
+index 1a9a6d8..1acc537 100644
+--- a/src/util/helpers/AndroidTweaks.h
++++ b/src/util/helpers/AndroidTweaks.h
+@@ -32,7 +32,8 @@ namespace AndroidTweaks
+ 		bool skipDeviceRobustBufferAccess = false;
+ 		// Diagnostic: every 5 s write the busiest threads (name, tid, % of one core, core last run on) to the log,
+ 		// for the first ~10 minutes after a game starts. Shows what actually loads each core.
+-		bool threadCpuLog = false;
++		// DEBUG BUILD: on by default so a log is produced even if the saved setting is not picked up.
++		bool threadCpuLog = true;
+ 	};
+ 
+ 	const Config& GetConfig();
+@@ -65,4 +66,7 @@ namespace AndroidTweaks
+ 
+ 	// One line describing the detected CPU layout, e.g. "big(strongest first)=[7,6,5,4] little=[0,1,2,3] mode=exclusive"
+ 	std::string DescribeCpuLayout();
++
++	// Multi-line text for the settings screen: config file path/size and the active and saved value of every switch.
++	std::string DescribeTweaksState();
+ }
