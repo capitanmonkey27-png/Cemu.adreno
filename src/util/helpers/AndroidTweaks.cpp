@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <atomic>
 #include <mutex>
 
 #if defined(__ANDROID__)
@@ -123,10 +124,31 @@ namespace AndroidTweaks
 		return cfg;
 	}
 
+	static std::atomic<unsigned> s_earlyConfigCalls{0};
+
 	const Config& GetConfig()
 	{
-		static const Config s_config = LoadConfig(); // thread-safe init
-		return s_config;
+		static const Config s_defaults;
+		static std::mutex s_mutex;
+		static Config s_loaded;
+		static std::atomic<bool> s_isLoaded{false};
+		if (s_isLoaded.load(std::memory_order_acquire))
+			return s_loaded;
+		// The config file lives in the app's config folder, which is only known once ActiveSettings::SetPaths() has
+		// run. A call from a thread that starts earlier gets the defaults and nothing is cached, so the real file is
+		// still read afterwards (before, the first call froze the defaults for the whole session).
+		if (ActiveSettings::GetConfigPath("").empty())
+		{
+			s_earlyConfigCalls.fetch_add(1, std::memory_order_relaxed);
+			return s_defaults;
+		}
+		std::lock_guard lock(s_mutex);
+		if (!s_isLoaded.load(std::memory_order_relaxed))
+		{
+			s_loaded = LoadConfig();
+			s_isLoaded.store(true, std::memory_order_release);
+		}
+		return s_loaded;
 	}
 
 	// --- settings screen support ------------------------------------------------------------------------------
@@ -427,7 +449,7 @@ namespace AndroidTweaks
 	{
 		static std::once_flag s_once;
 		std::call_once(s_once, []() {
-			cemuLog_log(LogType::Force, "AndroidTweaks: config file={} active: {}", DescribeFile(), FlagsToString(GetConfig()));
+			cemuLog_log(LogType::Force, "AndroidTweaks: config file={} early_reads={} active: {}", DescribeFile(), s_earlyConfigCalls.load(), FlagsToString(GetConfig()));
 		});
 	}
 
@@ -512,7 +534,7 @@ namespace AndroidTweaks
 	std::string DescribeTweaksState()
 	{
 		std::lock_guard lock(s_savedMutex);
-		return "file: " + DescribeFile() + "\nactive: " + FlagsToString(GetConfig()) + "\nsaved: " + FlagsToString(SavedConfigLocked());
+		return "file: " + DescribeFile() + "\nactive: " + FlagsToString(GetConfig()) + "\nsaved: " + FlagsToString(SavedConfigLocked()) + "\nearly config reads (before paths were set): " + std::to_string(s_earlyConfigCalls.load());
 	}
 
 	std::string DescribeCpuLayout()
